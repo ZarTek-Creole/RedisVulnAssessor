@@ -123,10 +123,10 @@ class RedisServerManager:
             List[List[str]]: Une liste de listes contenant les commandes Redis.
         """
         return [
-            ['redis-cli', '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dbfilename', 'backup.db'],
-            ['redis-cli', '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dir', self.directoryPath],
-            ['redis-cli', '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dbfilename', self.dbFilename],
-            ['redis-cli', '-h', self.ipAddress, '-p', self.port, 'save']
+            [self.binaryRedis, '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dbfilename', 'backup.db'],
+            [self.binaryRedis, '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dir', self.directoryPath],
+            [self.binaryRedis, '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dbfilename', self.dbFilename],
+            [self.binaryRedis, '-h', self.ipAddress, '-p', self.port, 'save']
         ]
 
     def processServer(self) -> Tuple[bool, str]:
@@ -161,7 +161,7 @@ class RedisServerManager:
             "/var/spool/cron",
         ]:
 
-            command = ['redis-cli', '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dir', dname]
+            command = [self.binaryRedis, '-h', self.ipAddress, '-p', self.port, 'config', 'set', 'dir', dname]
             success, _ = self._executeCommand(command)
             if success:
                 self.directoryPath = dname
