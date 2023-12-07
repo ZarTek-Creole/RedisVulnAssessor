@@ -1,0 +1,6 @@
+[pep8]
+max-line-length = 300
+
+in-place = True
+
+aggressive = 2

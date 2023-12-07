@@ -1,0 +1,20 @@
+[flake8]
+max_line_length = 300
+ignore = E203, E266, E501, W503, CFQ002
+select = B,C,E,F,W,T4,B9
+
+plugins = flake8_function_arguments,flake8-docstrings-complete
+
+[flake8-function-arguments]
+max-function-args = 3
+
+[flake8-docstrings-complete]
+convention=google
+ignore-magic=true
+ignore-init=true
+
+; Documentation:
+; This configuration file is used by Flake8, a Python linting tool, to enforce coding standards and check for potential errors in the code.
+; The [flake8] section contains general settings for Flake8, such as the maximum line length, ignored error codes, and selected error codes.
+; The [flake8-function-arguments] section configures the flake8_function_arguments plugin, which checks for excessive function arguments.
+; The [flake8-docstrings-complete] section configures the flake8-docstrings-complete plugin, which enforces complete and correct docstrings according to the Google style guide.
