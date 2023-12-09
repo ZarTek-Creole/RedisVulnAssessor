@@ -160,3 +160,7 @@ cython_debug/
 #.idea/
 id_ed25519
 id_ed25519.pub
+dumps/
+package-lock.json
+package.json
+.vscode/launch.json
