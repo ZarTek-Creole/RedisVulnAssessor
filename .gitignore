@@ -163,4 +163,6 @@ id_ed25519.pub
 dumps/
 package-lock.json
 package.json
+
+.vscode
 .vscode/launch.json
