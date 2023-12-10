@@ -84,8 +84,9 @@ class FileHandler:
 
 
 class RedisUtility:
-    def __init__(self, ip_address: str, port: int, binary_redis: str):
-        self.ip_address = ip_address
+    def __init__(self, args, port: int, binary_redis: str):
+        self.ip_address = args.ip_address
+        self.args = args
         self.port = port
         self.binary_redis = binary_redis
 
@@ -161,8 +162,10 @@ class RedisUtility:
 
     def redis_get_modules(self) -> Tuple[bool, str]:
         success, serveur_message = self.execute_command_redis(["MODULE", "LIST"])
+        if serveur_message.startswith("ERR"):
+            return False, "La fonction MODULE LIST n'est pas disponible"
         if success and serveur_message != '':
-            logfile("List des modules : %s", serveur_message)
+            logfile(f"List des modules : {serveur_message}", self.args)
             return True, serveur_message
         logging.debug("List des modules : Aucun module trouvé")
         return False, "Aucun module trouvé"
@@ -241,7 +244,7 @@ class RedisServerManager:
         self.ssh_key_private = self._derive_ssh_key_private(args.sshKey)
         self.directory_path = self._determine_directory_path(args.user)
         self.binary_redis = self._check_binary()
-        self.redis_utility = RedisUtility(args.ip_address, args.port, self.binary_redis)
+        self.redis_utility = RedisUtility(args, args.port, self.binary_redis)
 
     @staticmethod
     def _derive_ssh_key_private(ssh_key: str) -> str:
@@ -460,24 +463,27 @@ def execute_ssh_command(self) -> Tuple[bool, str]:
         ]
 
 
-def process_file(args):
-    file_path = args.file
-    logging.debug(f"Traitement du fichier : {file_path}")
-    # Fonction pour traiter une adresse IP
-
-    def process_ip(args):
+def process_ip(ip_address, args):
+    ip_address = ip_address.strip()
+    if ip_address:
+        args.ip_address = ip_address
         logging.debug(f"Traitement de l'adresse IP : {ip_address}")
         manager = RedisServerManager(args)
         success, message = manager.process_server()
         logfile(message, args)
-    # Utilisation de ThreadPoolExecutor pour exécuter process_ip en parallèle pour chaque adresse IP
-    with ThreadPoolExecutor(max_workers=args.threads) as executor:  # Ajustez max_workers selon vos besoins
-        with open(file_path, "r", encoding="utf-8") as file:
-            for ip_address in file:
-                ip_address = ip_address.strip()
-                if ip_address:
-                    # Soumettre la fonction process_ip pour exécution
-                    executor.submit(process_ip, args)
+
+
+def process_file(args):
+    file_path = args.file
+    print("-------------------------------")
+    logging.debug(f"Traitement du fichier : {file_path}")
+    # Fonction pour traiter une adresse IP
+    with open(file_path, "r", encoding="utf-8") as file:
+        ip_addresses = [line.strip() for line in file if line.strip()]
+
+    # Utilisez ThreadPoolExecutor pour exécuter le traitement en parallèle
+    with ThreadPoolExecutor(max_workers=args.threads) as executor:
+        executor.map(process_ip, ip_addresses, [args] * len(ip_addresses))
 
 
 def process_scan(args, ip_range):
@@ -502,7 +508,7 @@ def scan_port(args):
     try:
         sock.connect((args.ip_address, args.port))
         logging.debug(f"Port {args.port} ouvert sur {args.ip_address}")
-        manager = RedisServerManager(args.ip_address, str(args.port), args.user, args.sshKey, args.timeout, args.threads, args.outfile)  # Utilisez args directement
+        manager = RedisServerManager(args)  # Utilisez args directement
         success, message = manager.process_server()
         if not success:
             logging.warning(f"Error processing server {args.ip_address} : {message}")
@@ -570,8 +576,14 @@ def main():
     elif args.scan:
         logging.debug("Début du scan de la plage IP %s", args.scan)
         process_scan(args, args.scan)
-    else:
+    elif args.file:
         process_file(args)
+    else:
+        logging.warning("Aucune adresse IP ou chemin de fichier spécifié. "
+                        "Utilisez l'option '--ip' pour spécifier une adresse IP ou "
+                        "'-f' pour spécifier un fichier contenant des adresses IP. "
+                        "'-sc' pour scanner les adresses IP. "
+                        "Utilisez '--help' pour plus d'informations.")
 
 
 if __name__ == "__main__":
