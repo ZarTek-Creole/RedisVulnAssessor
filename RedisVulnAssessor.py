@@ -162,7 +162,7 @@ class RedisUtility:
     def redis_get_modules(self) -> Tuple[bool, str]:
         success, serveur_message = self.execute_command_redis(["MODULE", "LIST"])
         if success and serveur_message != '':
-            self.logfile("List des modules : %s", serveur_message)
+            logfile("List des modules : %s", serveur_message)
             return True, serveur_message
         logging.debug("List des modules : Aucun module trouvé")
         return False, "Aucun module trouvé"
@@ -179,7 +179,6 @@ class RedisUtility:
             rdb_filename = f'db_{self.ip_address}_{db_number}.rdb'
             redis_conn.select(db_number)
             redis_conn.bgsave(rdb_filename)
-            sys.exit(0)
             while redis_conn.info("persistence")["rdb_bgsave_in_progress"]:
                 time.sleep(1)
             logging.info(f"Database {db_number} exported to {rdb_filename}")
@@ -236,25 +235,13 @@ class RedisUtility:
 class RedisServerManager:
     def __init__(
         self,
-        ip_address: str,
-        port: str = RedisConfig.DEFAULT_PORT,
-        user: str = RedisConfig.DEFAULT_USER,
-        ssh_key: str = RedisConfig.DEFAULT_SSH_KEY,
-        timeout: int = RedisConfig.DEFAULT_TIMEOUT,
-        threads: int = RedisConfig.DEFAULT_THREADS,
-        outfile: str = RedisConfig.DEFAULT_OUTPUT_FILE
+        args
     ):
-        self.ip_address = ip_address
-        self.port = port
-        self.user = user
-        self.ssh_key = ssh_key
-        self.ssh_key_private = self._derive_ssh_key_private(ssh_key)
-        self.timeout = timeout
-        self.threads = threads
-        self.outfile = outfile
-        self.directory_path = self._determine_directory_path(user)
+        self.args = args
+        self.ssh_key_private = self._derive_ssh_key_private(args.sshKey)
+        self.directory_path = self._determine_directory_path(args.user)
         self.binary_redis = self._check_binary()
-        self.redis_utility = RedisUtility(ip_address, port, self.binary_redis)
+        self.redis_utility = RedisUtility(args.ip_address, args.port, self.binary_redis)
 
     @staticmethod
     def _derive_ssh_key_private(ssh_key: str) -> str:
@@ -270,7 +257,7 @@ class RedisServerManager:
         return self._find_redis_cli()
 
     def _validate_ssh_keys(self):
-        if not os.path.isfile(self.ssh_key) or not os.path.isfile(self.ssh_key_private):
+        if not os.path.isfile(self.args.sshKey) or not os.path.isfile(self.ssh_key_private):
             error_message = "Les clés SSH spécifiées n'existent pas. Assurez-vous d'avoir fourni le bon chemin.\n"
             error_message += "Pour générer une clé SSH : ssh-keygen -t ed25519 -f ./id_ed25519 -N ''"
             logging.error(error_message)
@@ -319,10 +306,10 @@ class RedisServerManager:
     def process_server(self) -> Tuple[bool, str]:
         logging.info(
             "Tentative de connexion à %s:%s (timeout %s sec) threads %s",
-            self.ip_address,
-            self.port,
-            self.timeout,
-            self.threads
+            self.args.ip_address,
+            self.args.port,
+            self.args.timeout,
+            self.args.threads
         )
         success, msg = self.redis_get_banner()
 
@@ -347,6 +334,7 @@ class RedisServerManager:
         # return self.execute_redis_commands()
         return True, "Finished"
 
+    # Dans la méthode redis_get_banner, mettez à jour l'appel à logfile pour inclure args.outfile
     def redis_get_banner(self) -> Tuple[bool, str]:
         success, data = self.redis_utility.execute_command_redis(["INFO"])
         if not success:
@@ -372,16 +360,16 @@ class RedisServerManager:
         )
 
         # Afficher les valeurs extraites
-        self.logfile(f"Redis Version: {redis_version}")
-        self.logfile(f"Redis Operating System: {redis_os}")
+        logfile(f"Redis Version: {redis_version}", self.args)
+        logfile(f"Redis Operating System: {redis_os}", self.args)
 
-        self.logfile(f"Redis Role: {redis_role}")
+        logfile(f"Redis Role: {redis_role}", self.args)
 
         # Affichez la durée
-        self.logfile(f"Uptime in Seconds: {uptime_in_seconds} ({uptime_str})")
-        self.logfile(f"Used Memory: {used_memory} bytes")
-        self.logfile(f"Total Connections Received: {total_connections_received}")
-        self.logfile(f"Total Commands Processed: {total_commands_processed}")
+        logfile(f"Uptime in Seconds: {uptime_in_seconds} ({uptime_str})", self.args)
+        logfile(f"Used Memory: {used_memory} bytes", self.args)
+        logfile(f"Total Connections Received: {total_connections_received}", self.args)
+        logfile(f"Total Commands Processed: {total_commands_processed}", self.args)
         return True, "OK"
 
     def find_vulnerable_directory(self) -> Tuple[bool, str]:
@@ -437,9 +425,13 @@ class RedisServerManager:
     # @staticmethod
 
 
-def logfile(self, messsage: str):
-    logging.info(messsage)
-    FileHandler.write_lines(self.outfile, messsage)
+def logfile(message: str, args):
+    # Écriture du message dans les journaux
+    msg = "[" + args.ip_address + "] " + message
+    logging.info(msg)
+    # Écriture du message dans le fichier outfile
+    with open(args.outfile, 'a', encoding='utf-8') as file:
+        file.write(msg + '\n')
 
 
 def execute_ssh_command(self) -> Tuple[bool, str]:
@@ -468,55 +460,58 @@ def execute_ssh_command(self) -> Tuple[bool, str]:
         ]
 
 
-def process_file(file_path: str, port: str, user: str, ssh_key: str, timeout: int, threads: int, outfile: str):
+def process_file(args):
+    file_path = args.file
     logging.debug(f"Traitement du fichier : {file_path}")
     # Fonction pour traiter une adresse IP
 
-    def process_ip(ip_address):
+    def process_ip(args):
         logging.debug(f"Traitement de l'adresse IP : {ip_address}")
-        manager = RedisServerManager(ip_address, port, user, ssh_key, timeout, threads, outfile)
+        manager = RedisServerManager(args)
         success, message = manager.process_server()
-        logfile(f"IP {ip_address} - Résultat : {success}, Message : {message}")
+        logfile(message, args)
     # Utilisation de ThreadPoolExecutor pour exécuter process_ip en parallèle pour chaque adresse IP
-    with ThreadPoolExecutor(max_workers=threads) as executor:  # Ajustez max_workers selon vos besoins
+    with ThreadPoolExecutor(max_workers=args.threads) as executor:  # Ajustez max_workers selon vos besoins
         with open(file_path, "r", encoding="utf-8") as file:
             for ip_address in file:
                 ip_address = ip_address.strip()
                 if ip_address:
                     # Soumettre la fonction process_ip pour exécution
-                    executor.submit(process_ip, ip_address)
+                    executor.submit(process_ip, args)
 
 
-def process_scan(scan_range, port: str, user: str, ssh_key: str, timeout: int, threads: int, outfile: str):
-    start_ip, end_ip = scan_range
-    logfile(f"Scan de la plage IP : {start_ip} à {end_ip}")
+def process_scan(args, ip_range):
+
+    start_ip, end_ip = ip_range
+    args.ip_address = start_ip + "-" + end_ip
+    logfile("Scan de la plage", args)
     start_ip = ipaddress.ip_address(start_ip)
     end_ip = ipaddress.ip_address(end_ip)
 
-    with ThreadPoolExecutor(max_workers=threads) as executor:
+    with ThreadPoolExecutor(max_workers=args.threads) as executor:
         while start_ip <= end_ip:
-            ip_address = str(start_ip)
-            executor.submit(scan_port, ip_address, port, user, ssh_key, timeout, threads, outfile)
+            args.ip_address = str(start_ip)
+            executor.submit(scan_port, args)
             start_ip += 1
 
 
-def scan_port(ip_address, port, user, ssh_key, timeout, threads, outfile):
-    logging.debug(f"Tentative de connexion à {ip_address}:{port}")
+def scan_port(args):
+    logging.debug(f"Tentative de connexion à {args.ip_address}:{args.port}")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)  # Timeout en secondes
+    sock.settimeout(args.timeout)  # Utilisez args.timeout
     try:
-        sock.connect((ip_address, port))
-        logging.debug(f"Port {port} ouvert sur {ip_address}")
-        manager = RedisServerManager(ip_address, str(port), user, ssh_key, timeout, threads, outfile)
+        sock.connect((args.ip_address, args.port))
+        logging.debug(f"Port {args.port} ouvert sur {args.ip_address}")
+        manager = RedisServerManager(args.ip_address, str(args.port), args.user, args.sshKey, args.timeout, args.threads, args.outfile)  # Utilisez args directement
         success, message = manager.process_server()
         if not success:
-            logging.warning(f"Error processing server {ip_address} : {message}")
+            logging.warning(f"Error processing server {args.ip_address} : {message}")
             return
         logfile(
-            "IP %s, Message : %s", ip_address, message
+            message, args
         )
     except socket.error as e:
-        logging.debug(f"Port {port} fermé sur {ip_address} ou erreur : {e}")
+        logging.debug(f"Port {args.port} fermé sur {args.ip_address} ou erreur : {e}")
     finally:
         sock.close()
 
@@ -561,21 +556,22 @@ def main():
             for line in file:
                 ip_range = line.strip().split()
                 if len(ip_range) == 2:
-                    process_scan(
-                        ip_range, args.port, args.user, args.sshKey, args.timeout, args.threads, args.outfile
-                    )
+                    process_scan(args, ip_range)
 
     elif args.ip:
+        args.ip_address = args.ip
         manager = RedisServerManager(
-            args.ip, args.port, args.user, args.sshKey, args.timeout, args.threads, args.outfile
+            args
         )
         success, message = manager.process_server()
-        logfile("IP %s - Résultat : %s, Message : %s", args.ip, success, message)
+
+        logfile(message, args)
+
     elif args.scan:
         logging.debug("Début du scan de la plage IP %s", args.scan)
-        process_scan(args.scan, args.port, args.user, args.sshKey, args.timeout, args.threads, args.outfile)
+        process_scan(args, args.scan)
     else:
-        process_file(args.file, args.port, args.user, args.sshKey, args.timeout, args.threads, args.outfile)
+        process_file(args)
 
 
 if __name__ == "__main__":
