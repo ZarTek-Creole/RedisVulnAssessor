@@ -317,8 +317,8 @@ class RedisServerManager:
             return False, msg
         success, msg = self.redis_utility.redis_get_modules()
 
-        if not success:
-            return False, msg
+        # if not success:
+        #     return False, msg
         success, msg = self.redis_utility.redis_get_dump()
         if not success:
             return False, msg
