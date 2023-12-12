@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Nom du code : Gestionnaire de serveurs Redis non authentifiés
-Description : Ce code exploite les serveurs Redis non authentifiés pour la sécurité.
-              Il cherche des répertoires vulnérables et exécute des commandes via SSH.
-Auteur      : ZarTek-Creole
-Date        : 06-12-23
+Titre du projet : Outil d'Évaluation de la Sécurité des Serveurs Redis pour les Professionnels de la Sécurité
+
+Description     : Cet outil a pour objectif d'évaluer la sécurité des serveurs Redis.
+                  Il permet de réaliser des énumérations des serveurs Redis, de tester les connexions,
+                  de récupérer les données des bases de données pour déterminer s'il y a eu une exploitation antérieure
+                  par des individus malveillants ou des robots.
+                  De plus, il offre la possibilité de vérifier la disponibilité des répertoires en écriture
+                  et de confirmer la faisabilité d'écrire une clé SSH pour une connexion sécurisée par clé.
+
+En résumé       : Cet outil a été conçu pour les professionnels de la cybersécurité dans le but
+                  de détecter les vulnérabilités déjà connues des serveurs Redis.
+
+Avertissement   : Cet outil est destiné à des fins éducatives et de test de sécurité.
+                  L'utilisation de cet outil sur des réseaux ou des serveurs sans autorisation explicite est illégale.
+                  L'auteur ou les contributeurs ne seront pas responsables de toute utilisation illégale.
+
+Auteur          : ZarTek-Creole
 """
 
 import argparse
