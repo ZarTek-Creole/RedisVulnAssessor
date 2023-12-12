@@ -32,6 +32,7 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from functools import wraps
 from typing import List, Tuple
 
 import redis
@@ -56,6 +57,27 @@ class RedisConfig:
         r"https?://[^\s/$.?#].[^\s]*"
     )
     REGEXP_BASE64 = re.compile(r'echo\s(.*?)\|base64\s-d')
+
+
+def log_decorator(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        logging.info(f"Début de l'exécution de {func.__name__}")
+        result = func(*args, **kwargs)
+        logging.info(f"Fin de l'exécution de {func.__name__}")
+        return result
+    return wrapper
+
+
+def error_handling_decorator(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logging.error(f"Erreur dans {func.__name__}: {e}")
+            # Retourner une valeur par défaut ou propager l'erreur si nécessaire
+    return wrapper
 
 
 class ExitOnErrorHandler(logging.StreamHandler):
@@ -436,6 +458,8 @@ class RedisServerManager:
         logging.error("Le client Redis n'est pas installé.")
         raise EnvironmentError("Le client Redis n'est pas installé. Veuillez installer un client Redis (ex. : 'apt install redis-tools').")
 
+    @log_decorator
+    @error_handling_decorator
     def process_server(self) -> Tuple[bool, str]:
         logging.info(
             "Tentative de connexion à %s:%s (timeout %s sec) threads %s",
@@ -490,6 +514,8 @@ class RedisServerManager:
         logging.info("--------------------- %s-------------------- %s", server_message, command)
         return success
 
+    @log_decorator
+    @error_handling_decorator
     def execute_command(self, command: List[str]) -> Tuple[bool, str, str]:
         logging.debug("Commande execute_command: %s", command)
         try:
@@ -523,6 +549,8 @@ def logfile(message: str, args):
         file.write(msg + '\n')
 
 
+@log_decorator
+@error_handling_decorator
 def execute_ssh_command(self) -> Tuple[bool, str]:
     ssh_command = self.build_ssh_command()
     logging.debug("Commande SSH : %s", ssh_command)
@@ -550,6 +578,8 @@ def build_ssh_command(self) -> List[str]:
     ]
 
 
+@log_decorator
+@error_handling_decorator
 def process_ip(ip_address, args):
     ip_address = ip_address.strip()
     if ip_address:
@@ -561,6 +591,8 @@ def process_ip(ip_address, args):
     return False, "Aucune adresse IP spécifiée"
 
 
+@log_decorator
+@error_handling_decorator
 def process_file(args):
     file_path = args.file
     logging.debug("Traitement du fichier : %s", file_path)
@@ -577,6 +609,8 @@ def process_file(args):
     return True, "OK"
 
 
+@log_decorator
+@error_handling_decorator
 def process_scan(args, ip_range):
     start_ip, end_ip = ip_range
     args.ip_address = start_ip + "-" + end_ip
@@ -592,6 +626,8 @@ def process_scan(args, ip_range):
     return True, "OK"
 
 
+@log_decorator
+@error_handling_decorator
 def process_scanfile(args, ip_range):
     with open(args.scanfile, "r", encoding="utf-8") as file:
         for line in file:
@@ -601,6 +637,8 @@ def process_scanfile(args, ip_range):
     return success, message
 
 
+@log_decorator
+@error_handling_decorator
 def scan_port(args):
     logging.debug("Tentative de connexion à %s:%s", args.ip_address, args.port)
     print("Tentative de connexion à %s:%s" % (args.ip_address, args.port))
